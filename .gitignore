@@ -1,0 +1,11 @@
+node_modules
+.next
+.env
+.env.local
+prisma/dev.db
+.wwebjs_auth
+*.tsbuildinfo
+.DS_Store
+.wwebjs_cache/
+.wwebjs_auth/
+.baileys_auth/

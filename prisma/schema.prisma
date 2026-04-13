@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Executive {
+  id          String   @id @default(uuid())
+  name        String   // "Fp Sunil"
+  displayName String   @map("display_name") // "Sunil"
+  phone       String?
+  email       String?
+  active      Boolean  @default(true)
+  dailyTarget Int      @default(8) @map("daily_target")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  visits Visit[]
+  alerts Alert[]
+
+  @@map("executives")
+}
+
+model School {
+  id               String   @id @default(uuid())
+  canonicalName    String   @map("canonical_name")
+  aliases          String[] @default([])
+  address          String?
+  board            String?  // CBSE, ICSE, MPBSE
+  lastKnownStrength Int?    @map("last_known_strength")
+  principalName    String?  @map("principal_name")
+  principalMobile  String?  @map("principal_mobile")
+  principalEmail   String?  @map("principal_email")
+  principalDob     String?  @map("principal_dob")
+  bookSeller       String?  @map("book_seller")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  visits Visit[]
+
+  @@map("schools")
+}
+
+model Visit {
+  id            String   @id @default(uuid())
+  executiveId   String   @map("executive_id")
+  schoolId      String?  @map("school_id")
+  visitDate     DateTime @map("visit_date") @db.Date
+  rawText       String?  @map("raw_text")
+
+  // Extracted fields
+  schoolNameRaw    String?  @map("school_name_raw")
+  address          String?
+  board            String?
+  strength         Int?
+  principalName    String?  @map("principal_name")
+  principalMobile  String?  @map("principal_mobile")
+  principalEmail   String?  @map("principal_email")
+  principalDob     String?  @map("principal_dob")
+  bookSeller       String?  @map("book_seller")
+  remark           String?
+  remarkDetail     String?  @map("remark_detail")
+  locationUrl      String?  @map("location_url")
+
+  // Validation
+  dataComplete     Boolean  @default(false) @map("data_complete")
+  missingFields    String[] @default([]) @map("missing_fields")
+  extractionModel  String?  @map("extraction_model") // haiku | sonnet
+
+  // Tracking
+  isRepeatVisit        Boolean @default(false) @map("is_repeat_visit")
+  visitNumberInSession Int     @default(1) @map("visit_number_in_session")
+  changesFromLast      Json    @default("[]") @map("changes_from_last")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  executive Executive @relation(fields: [executiveId], references: [id])
+  school    School?   @relation(fields: [schoolId], references: [id])
+  alerts    Alert[]
+
+  @@index([executiveId, visitDate])
+  @@index([schoolId])
+  @@index([visitDate])
+  @@map("visits")
+}
+
+model Alert {
+  id          String   @id @default(uuid())
+  visitId     String?  @map("visit_id")
+  executiveId String   @map("executive_id")
+  alertType   String   @map("alert_type")  // MISSING_DATA, TARGET_NOT_MET, STATUS_CHANGED, NO_REPORT, EXCESSIVE_REPEAT
+  message     String
+  severity    String   @default("medium")  // high, medium, low
+  resolved    Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  visit     Visit?    @relation(fields: [visitId], references: [id])
+  executive Executive @relation(fields: [executiveId], references: [id])
+
+  @@index([executiveId])
+  @@index([createdAt])
+  @@map("alerts")
+}
+
+model DailySummary {
+  id                       String   @id @default(uuid())
+  summaryDate              DateTime @unique @map("summary_date") @db.Date
+  totalExecutivesReporting Int      @map("total_executives_reporting")
+  totalVisits              Int      @map("total_visits")
+  avgVisitsPerExec         Float    @map("avg_visits_per_exec")
+  targetsMetCount          Int      @map("targets_met_count")
+  targetsMissedCount       Int      @map("targets_missed_count")
+  newSchoolsCount          Int      @map("new_schools_count")
+  repeatVisitsCount        Int      @map("repeat_visits_count")
+  dataCompletenessPct      Float    @map("data_completeness_pct")
+  summaryText              String?  @map("summary_text")
+  createdAt                DateTime @default(now()) @map("created_at")
+
+  @@map("daily_summaries")
+}
+
+model IngestionRun {
+  id                  String   @id @default(uuid())
+  runDate             DateTime @map("run_date") @db.Date
+  messagesScraped     Int      @map("messages_scraped")
+  messagesAfterFilter Int      @map("messages_after_filter")
+  chunksCreated       Int      @map("chunks_created")
+  visitsExtracted     Int      @map("visits_extracted")
+  alertsGenerated     Int      @map("alerts_generated")
+  haikuTokensUsed     Int      @default(0) @map("haiku_tokens_used")
+  sonnetTokensUsed    Int      @default(0) @map("sonnet_tokens_used")
+  status              String   // success, partial, failed
+  errorLog            String?  @map("error_log")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@map("ingestion_runs")
+}
+
+model Settings {
+  id                 String @id @default("default")
+  dailyTargetVisits  Int    @default(8) @map("daily_target_visits")
+  alertEmailTo       String @default("") @map("alert_email_to")
+  managerEmail       String @default("") @map("manager_email")
+  sessionStartDate   DateTime? @map("session_start_date") @db.Date
+  sessionEndDate     DateTime? @map("session_end_date") @db.Date
+  whatsappGroupName  String @default("") @map("whatsapp_group_name")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@map("settings")
+}

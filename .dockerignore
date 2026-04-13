@@ -1,0 +1,8 @@
+node_modules
+.next
+.env
+.env.local
+prisma/dev.db
+.wwebjs_auth
+.git
+*.md

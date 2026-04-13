@@ -1,0 +1,17 @@
+@import "tailwindcss" source("../**/*.{ts,tsx}");
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: #09090b;
+  color: #fafafa;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-data { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+
+@keyframes fadeUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+.anim { animation: fadeUp 0.35s ease-out both; }
+.d1 { animation-delay:40ms } .d2 { animation-delay:80ms } .d3 { animation-delay:120ms }
+.d4 { animation-delay:160ms } .d5 { animation-delay:200ms } .d6 { animation-delay:240ms }
+.d7 { animation-delay:280ms } .d8 { animation-delay:320ms } .d9 { animation-delay:360ms }

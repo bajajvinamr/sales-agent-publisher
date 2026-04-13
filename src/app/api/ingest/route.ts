@@ -35,27 +35,7 @@ export async function POST(request: Request) {
     // Run the pipeline
     const result = await runPipeline(messages, DEFAULT_CONFIG)
 
-    // Persist ingestion run log
-    const runDate = new Date()
-    runDate.setHours(0, 0, 0, 0)
-
-    await prisma.ingestionRun.create({
-      data: {
-        runDate,
-        messagesScraped: result.run.messagesScraped,
-        messagesAfterFilter: result.run.messagesAfterFilter,
-        chunksCreated: result.run.chunksCreated,
-        visitsExtracted: result.run.visitsExtracted,
-        alertsGenerated: result.run.alertsGenerated,
-        haikuTokensUsed: result.run.haikuTokensUsed,
-        sonnetTokensUsed: result.run.sonnetTokensUsed,
-        status: result.run.errors.length === 0 ? 'success' : 'partial',
-        errorLog:
-          result.run.errors.length > 0
-            ? result.run.errors.join('\n')
-            : null,
-      },
-    })
+    // Ingestion run already persisted by orchestrator — no duplicate write
 
     // Send email notifications (non-blocking — don't fail ingest on email error)
     try {

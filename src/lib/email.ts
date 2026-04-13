@@ -6,6 +6,10 @@ function getResend() {
   return new Resend(key)
 }
 
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
 function todayFormatted(): string {
   return new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
@@ -20,9 +24,9 @@ export async function sendAlertEmail(
     .map(
       (a) => `
         <tr>
-          <td style="padding:8px 12px;border-bottom:1px solid #2a2a2a;color:#f4f4f5;">${a.executive}</td>
-          <td style="padding:8px 12px;border-bottom:1px solid #2a2a2a;color:#f4f4f5;">${a.type}</td>
-          <td style="padding:8px 12px;border-bottom:1px solid #2a2a2a;color:#f4f4f5;">${a.message}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #2a2a2a;color:#f4f4f5;">${esc(a.executive)}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #2a2a2a;color:#f4f4f5;">${esc(a.type)}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #2a2a2a;color:#f4f4f5;">${esc(a.message)}</td>
         </tr>`
     )
     .join('')
@@ -58,8 +62,8 @@ export async function sendWeeklyDigest(
     .map(
       (s) => `
         <div style="background:#18181b;border:1px solid #27272a;border-radius:8px;padding:16px;margin-bottom:12px;">
-          <h3 style="color:#f59e0b;margin:0 0 8px;">${s.name}</h3>
-          <p style="color:#d4d4d8;margin:0;line-height:1.6;">${s.text}</p>
+          <h3 style="color:#f59e0b;margin:0 0 8px;">${esc(s.name)}</h3>
+          <p style="color:#d4d4d8;margin:0;line-height:1.6;">${esc(s.text)}</p>
         </div>`
     )
     .join('')
@@ -104,7 +108,7 @@ export async function sendDailySummaryEmail(
       </div>
 
       <div style="background:#18181b;border:1px solid #27272a;border-radius:8px;padding:16px;">
-        <p style="color:#d4d4d8;margin:0;line-height:1.7;white-space:pre-wrap;">${summary}</p>
+        <p style="color:#d4d4d8;margin:0;line-height:1.7;white-space:pre-wrap;">${esc(summary)}</p>
       </div>
     </div>`
 

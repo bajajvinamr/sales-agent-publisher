@@ -147,6 +147,8 @@ export async function connect(): Promise<{ status: BaileysStatus; error?: string
 
         const parsed = parseWAMessage(msg)
         if (parsed) {
+          // Cap at 5000 messages to prevent OOM
+          if (state.capturedMessages.length >= 5000) state.capturedMessages.shift()
           state.capturedMessages.push(parsed)
           const today = new Date().toISOString().slice(0, 10)
           if (state.captureStartDate === today) {

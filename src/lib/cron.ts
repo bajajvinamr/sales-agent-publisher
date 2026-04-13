@@ -25,8 +25,18 @@ export function startCron() {
     const hour = now.getHours()
     const minute = now.getMinutes()
 
-    // Run at 8:00 PM (20:00) — only on the exact minute to avoid double-runs
+    // Run at 8:00 PM (20:00)
     if (hour === 20 && minute === 0) {
+      // Guard: check if we already ran today
+      const today = new Date().toISOString().slice(0, 10)
+      const todayStart = new Date(today + 'T00:00:00Z')
+      const existing = await prisma.ingestionRun.findFirst({
+        where: { runDate: { gte: todayStart } },
+      }).catch(() => null)
+      if (existing) {
+        console.log('[Cron] Already ran today, skipping')
+        return
+      }
       console.log('[Cron] 8 PM — starting auto-processing')
       await autoProcess()
     }
@@ -64,22 +74,7 @@ async function autoProcess() {
     // Run AI pipeline
     const result = await runPipeline(messages, DEFAULT_CONFIG)
 
-    // Store ingestion run
-    await prisma.ingestionRun.create({
-      data: {
-        runDate: new Date(),
-        messagesScraped: messages.length,
-        messagesAfterFilter: result.run.messagesAfterFilter,
-        chunksCreated: result.run.chunksCreated,
-        visitsExtracted: result.run.visitsExtracted,
-        alertsGenerated: result.run.alertsGenerated,
-        haikuTokensUsed: result.run.haikuTokensUsed,
-        sonnetTokensUsed: result.run.sonnetTokensUsed,
-        status: result.run.errors.length === 0 ? 'success' : 'partial',
-        errorLog: result.run.errors.length > 0 ? result.run.errors.join('\n') : null,
-      },
-    })
-
+    // Ingestion run already persisted by orchestrator
     console.log(`[Cron] Pipeline complete: ${result.run.visitsExtracted} visits, ${result.run.alertsGenerated} alerts`)
 
     // Send emails

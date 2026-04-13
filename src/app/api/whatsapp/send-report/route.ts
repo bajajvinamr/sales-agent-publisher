@@ -11,11 +11,11 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json()
-    const phone = body.phone // e.g. "919876543210"
-    const date = body.date // e.g. "2025-12-30"
+    const phone = String(body.phone || '').replace(/[^0-9]/g, '')
+    const date = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : undefined
 
-    if (!phone) {
-      return NextResponse.json({ error: 'Phone number required' }, { status: 400 })
+    if (!phone || phone.length < 10 || phone.length > 15) {
+      return NextResponse.json({ error: 'Valid phone number required (10-15 digits with country code, e.g. 919876543210)' }, { status: 400 })
     }
 
     // Get the day's data
@@ -66,7 +66,9 @@ export async function POST(req: Request) {
     const topPerformers = sorted.slice(0, 5).map(([name, count]) => ({ name, visits: count }))
 
     const execsReporting = new Set(visits.map(v => v.executiveId)).size
-    const targetsMet = sorted.filter(([, count]) => count >= 8).length
+    const settings = await prisma.settings.findUnique({ where: { id: 'default' } })
+    const dailyTarget = settings?.dailyTargetVisits ?? 8
+    const targetsMet = sorted.filter(([, count]) => count >= dailyTarget).length
 
     const reportDate = queryStart.toISOString().slice(0, 10)
 

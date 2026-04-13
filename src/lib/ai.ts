@@ -5,9 +5,10 @@ import { z } from 'zod'
 import { config } from 'dotenv'
 config()
 
-const anthropic = createAnthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!.trim()
-})
+const apiKey = process.env.ANTHROPIC_API_KEY?.trim()
+if (!apiKey) console.warn('[AI] ANTHROPIC_API_KEY not set — extraction will fail')
+
+const anthropic = createAnthropic({ apiKey: apiKey || 'missing' })
 
 // ── Model routing ────────────────────────────────────────────
 // Haiku: structured extraction (95% of calls, $0.02/day)

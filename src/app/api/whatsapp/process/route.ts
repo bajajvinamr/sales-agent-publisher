@@ -38,21 +38,7 @@ export async function POST(req: Request) {
     // Run pipeline
     const result = await runPipeline(messages, DEFAULT_CONFIG)
 
-    // Store ingestion run
-    await prisma.ingestionRun.create({
-      data: {
-        runDate: new Date(),
-        messagesScraped: messages.length,
-        messagesAfterFilter: result.run.messagesAfterFilter,
-        chunksCreated: result.run.chunksCreated,
-        visitsExtracted: result.run.visitsExtracted,
-        alertsGenerated: result.run.alertsGenerated,
-        haikuTokensUsed: result.run.haikuTokensUsed,
-        sonnetTokensUsed: result.run.sonnetTokensUsed,
-        status: result.run.errors.length === 0 ? 'success' : 'partial',
-        errorLog: result.run.errors.length > 0 ? result.run.errors.join('\n') : null,
-      },
-    })
+    // Ingestion run already persisted by orchestrator
 
     // Send email notifications
     try {

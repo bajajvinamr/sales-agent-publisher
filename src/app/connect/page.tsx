@@ -12,6 +12,12 @@ export default function ConnectPage() {
   const [waError, setWaError] = useState<string | null>(null)
   const [sendingReport, setSendingReport] = useState(false)
   const [reportSent, setReportSent] = useState(false)
+  const [monitoredGroup, setMonitoredGroup] = useState<string | null>(null)
+  const [capturedCount, setCapturedCount] = useState(0)
+  const [groups, setGroups] = useState<{ name: string; id: string; participants: number }[]>([])
+  const [loadingGroups, setLoadingGroups] = useState(false)
+  const [processing, setProcessing] = useState(false)
+  const [processResult, setProcessResult] = useState<{ visits: number; alerts: number } | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const [uploadState, setUploadState] = useState<UploadState>('idle')
@@ -27,6 +33,8 @@ export default function ConnectPage() {
       setWaStatus(data.status)
       setQrDataUrl(data.qrDataUrl)
       if (data.error) setWaError(data.error)
+      if (data.monitoredGroup) setMonitoredGroup(data.monitoredGroup)
+      if (data.messagesCapturedToday !== undefined) setCapturedCount(data.messagesCapturedToday)
       if (data.status === 'connected' && pollRef.current) {
         clearInterval(pollRef.current)
         pollRef.current = null
@@ -55,6 +63,38 @@ export default function ConnectPage() {
     await fetch('/api/whatsapp/disconnect', { method: 'POST' })
     setWaStatus('disconnected')
     setQrDataUrl(null)
+  }
+
+  const handleLoadGroups = async () => {
+    setLoadingGroups(true)
+    try {
+      const res = await fetch('/api/whatsapp/monitor')
+      const data = await res.json()
+      setGroups(data.groups || [])
+    } catch {} finally { setLoadingGroups(false) }
+  }
+
+  const handleMonitorGroup = async (groupName: string) => {
+    const res = await fetch('/api/whatsapp/monitor', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ groupName }),
+    })
+    const data = await res.json()
+    if (data.success) { setMonitoredGroup(data.groupName); setGroups([]) }
+    else { alert(data.error || 'Failed to monitor group') }
+  }
+
+  const handleProcessMessages = async () => {
+    setProcessing(true)
+    setProcessResult(null)
+    try {
+      const res = await fetch('/api/whatsapp/process', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+      const data = await res.json()
+      if (data.success) { setProcessResult({ visits: data.visitsExtracted, alerts: data.alertsGenerated }) }
+      else { alert(data.error || 'Processing failed') }
+    } catch (e) { alert('Processing failed') }
+    finally { setProcessing(false) }
   }
 
   const handleSendReport = async () => {
@@ -255,16 +295,64 @@ export default function ConnectPage() {
           )}
 
           {waStatus === 'connected' && (
-            <div className="space-y-2">
+            <div className="space-y-3">
               <div className="rounded-lg p-3 bg-emerald-950 border border-emerald-800 flex items-center gap-2">
                 <Wifi size={14} className="text-emerald-400" />
-                <span className="text-sm font-medium text-emerald-400">Connected — ready to send reports</span>
+                <span className="text-sm font-medium text-emerald-400">WhatsApp Connected</span>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+
+              {/* Group monitoring */}
+              {!monitoredGroup ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-zinc-400">Select a group to monitor:</p>
+                  <button onClick={handleLoadGroups} disabled={loadingGroups} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-semibold bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50 transition-colors">
+                    {loadingGroups ? <RefreshCw size={12} className="animate-spin" /> : null}
+                    {loadingGroups ? 'Loading groups...' : 'Load My Groups'}
+                  </button>
+                  {groups.length > 0 && (
+                    <div className="space-y-1 max-h-40 overflow-y-auto">
+                      {groups.map(g => (
+                        <button key={g.id} onClick={() => handleMonitorGroup(g.name)} className="w-full text-left px-3 py-2 rounded-lg text-xs bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 transition-colors text-zinc-200">
+                          {g.name} <span className="text-zinc-500">({g.participants} members)</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="rounded-lg p-3 bg-zinc-800 border border-zinc-700">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-1">Monitoring Group</p>
+                    <p className="text-sm font-semibold text-zinc-100">{monitoredGroup}</p>
+                    <p className="text-xs text-amber-400 mt-1">{capturedCount} messages captured today</p>
+                  </div>
+
+                  {/* Process captured messages */}
+                  <button
+                    onClick={handleProcessMessages}
+                    disabled={processing || capturedCount === 0}
+                    className="w-full flex items-center justify-center gap-1.5 py-3 rounded-lg text-sm font-bold bg-amber-500 text-zinc-950 hover:bg-amber-400 disabled:opacity-50 transition-colors"
+                  >
+                    {processing ? <RefreshCw size={14} className="animate-spin" /> : null}
+                    {processing ? 'Processing with AI...' : `Process ${capturedCount} Messages`}
+                  </button>
+
+                  {processResult && (
+                    <div className="rounded-lg p-3 bg-emerald-950 border border-emerald-800 text-center">
+                      <CheckCircle size={20} className="mx-auto text-emerald-400 mb-1" />
+                      <p className="text-xs text-emerald-400">{processResult.visits} visits extracted · {processResult.alerts} alerts</p>
+                      <a href="/" className="text-xs text-emerald-400 font-medium underline mt-1 inline-block">View Dashboard →</a>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="grid grid-cols-2 gap-2 pt-1">
                 <button
                   onClick={handleSendReport}
                   disabled={sendingReport}
-                  className="flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-semibold bg-amber-500 text-zinc-950 hover:bg-amber-400 disabled:opacity-50 transition-colors"
+                  className="flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-semibold bg-zinc-800 text-amber-400 border border-zinc-700 hover:bg-zinc-700 transition-colors"
                 >
                   {sendingReport ? <RefreshCw size={12} className="animate-spin" /> : <Send size={12} />}
                   {reportSent ? 'Sent!' : 'Send Report'}

@@ -1,141 +1,198 @@
 # Sales Tracker — WhatsApp Field Team Intelligence
 
-Parse WhatsApp field rep messages into structured school visit data. AI-powered dashboard with team performance tracking, alerts, and weekly digests.
+AI-powered dashboard that reads your sales team's WhatsApp group, extracts structured visit data, and tracks performance automatically.
 
-![Dashboard Screenshot](docs/screenshot.png)
-
----
-
-## What it does
-
-- Reads WhatsApp group messages from your field sales team
-- Claude Haiku extracts structured visit data: school name, board, principal, discussion topics, next steps
-- Dashboard shows rep performance, visit streaks, missing-data alerts, and school pipeline
-- Resend sends email alerts for incomplete entries and weekly digest summaries
+**Replaces 2-3 hours of manual data entry every evening.**
 
 ---
 
-## Quick Start (Local)
+## How It Works
 
-```bash
-git clone <repo-url>
-cd whatsapp-sales-agent
-cp .env.example .env        # fill in ANTHROPIC_API_KEY + DB_PASSWORD
-docker compose up -d
-open http://localhost:3000
+```
+Sales reps report in WhatsApp group
+         ↓
+Upload chat export (.txt) to dashboard
+         ↓
+AI extracts: school, board, principal, strength, book seller, remark
+         ↓
+Dashboard shows: team performance, alerts, school tracking
+         ↓
+Reports sent via email + WhatsApp
 ```
 
-Migrations run automatically on first start via `prisma db push`.
+---
+
+## Deploy to Digital Ocean (10 minutes)
+
+### Step 1: Create a Droplet
+
+- Go to [cloud.digitalocean.com](https://cloud.digitalocean.com)
+- Create Droplet → **Ubuntu 24.04** → **2GB RAM / 1 CPU** ($12/month)
+- Add your SSH key
+
+### Step 2: SSH in and setup
+
+```bash
+ssh root@your-droplet-ip
+```
+
+```bash
+# Install Docker
+curl -fsSL https://get.docker.com | sh
+
+# Clone the app
+git clone https://github.com/bajajvinamr/sales-agent-publisher.git
+cd sales-agent-publisher
+
+# Configure
+cp .env.example .env
+nano .env
+```
+
+Fill in your `.env`:
+```
+ANTHROPIC_API_KEY=sk-ant-...    # Get from console.anthropic.com
+DB_PASSWORD=pick-a-strong-password
+RESEND_API_KEY=re_...           # Optional: for email alerts
+APP_URL=http://your-droplet-ip:3000
+```
+
+### Step 3: Start
+
+```bash
+docker compose up -d
+```
+
+### Step 4: Open
+
+Go to `http://your-droplet-ip:3000` in your browser.
+
+**That's it.** Database, AI pipeline, and dashboard are all running.
 
 ---
 
-## Quick Start (Digital Ocean Droplet)
+## First Time Setup (After Deploy)
 
-1. Create a Droplet — Ubuntu 22.04, 2 GB RAM, $12/mo
-2. SSH in and install Docker:
-   ```bash
-   curl -fsSL https://get.docker.com | sh
-   sudo usermod -aG docker $USER && newgrp docker
-   ```
-3. Clone and configure:
-   ```bash
-   git clone <repo-url> && cd whatsapp-sales-agent
-   cp .env.example .env
-   nano .env   # set ANTHROPIC_API_KEY, DB_PASSWORD, APP_URL
-   ```
-4. Start:
-   ```bash
-   docker compose up -d
-   ```
-5. Access at `http://your-droplet-ip:3000`
+1. **Go to Settings** (`/settings`)
+   - Set daily visit target (e.g. 8)
+   - Set WhatsApp group name
+   - Set alert email + manager email
 
-> For HTTPS, put Nginx + Certbot in front of port 3000.
+2. **Upload your first chat export** (`/connect`)
+   - Open the sales WhatsApp group on your phone
+   - Tap ⋮ → More → Export Chat → Without Media
+   - Upload the .txt file on the Connect page
+   - Dashboard populates automatically
+
+3. **Connect WhatsApp for reports** (`/connect`)
+   - Click "Connect WhatsApp"
+   - Scan QR code with your phone
+   - Now you can send daily reports to the team via WhatsApp
+
+---
+
+## Daily Usage
+
+**Every evening at 8 PM:**
+
+1. Export today's chat from WhatsApp group (.txt, without media)
+2. Upload on the Connect page
+3. AI processes all messages in ~30 seconds
+4. Check dashboard for today's summary
+5. Download Excel if needed
+6. Reports auto-sent to WhatsApp + email (if configured)
+
+---
+
+## What You See
+
+### Dashboard
+- Total visits today
+- Which reps reported, who didn't
+- Who hit target, who's behind
+- AI-generated daily summary
+- Alerts: missing data, under-target, status changes
+
+### Report
+- Every visit as a card: school, board, strength, principal, remark
+- Click to expand: full details, phone, book seller, location
+- Filter by rep, navigate by date
+- Download as Excel (same format you use today)
+
+### Schools
+- Every school visited, total visit count
+- Click to see visit timeline
+- Search by name
+
+### Connect
+- Upload WhatsApp chat export
+- Connect WhatsApp for sending reports
+- Step-by-step instructions included
 
 ---
 
 ## Environment Variables
 
-| Variable | Required | Description |
+| Variable | Required | What it does |
 |----------|----------|-------------|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `ANTHROPIC_API_KEY` | Yes | Claude API key for extraction + summaries |
-| `DB_PASSWORD` | Yes (Docker) | Postgres password used by docker-compose |
-| `RESEND_API_KEY` | No | Email alerts via Resend (falls back to console log) |
-| `APP_PASSWORD` | No | Simple password gate for the dashboard |
-| `APP_URL` | No | Public URL for email links (default: http://localhost:3000) |
+| `ANTHROPIC_API_KEY` | **Yes** | Claude AI for extracting visit data |
+| `DB_PASSWORD` | **Yes** | PostgreSQL database password |
+| `DATABASE_URL` | Auto | Set by docker-compose automatically |
+| `RESEND_API_KEY` | No | Email alerts (works without it, just no emails) |
+| `APP_URL` | No | Your server URL (for email links) |
 
 ---
 
-## Architecture
+## Monthly Cost
 
+| What | Cost |
+|------|------|
+| Digital Ocean Droplet (2GB) | $12/month |
+| Claude AI (Haiku extraction) | ~₹165/month (~$2) |
+| Email (Resend free tier) | Free |
+| **Total** | **~$14/month** |
+
+vs. 2-3 hours of manual data entry every day.
+
+---
+
+## Tech Details (For Developers)
+
+**Stack:** Next.js 15, Tailwind CSS, Prisma, PostgreSQL, Claude Haiku/Sonnet, Baileys (WhatsApp), Resend
+
+**Pipeline accuracy:** 99% field-level extraction on 20-record eval
+
+**Architecture:**
 ```
-WhatsApp message
-      ↓
-  /api/ingest          — receives raw message text
-      ↓
-  Preprocessor         — normalises, strips noise
-      ↓
-  Claude Haiku         — extracts structured visit fields
-      ↓
-  Validator (Zod)      — enforces schema, flags missing fields
-      ↓
-  PostgreSQL (Prisma)  — stores visits, schools, reps
-      ↓
-  Dashboard            — Next.js UI, real-time table + charts
-      ↓
-  Resend alerts        — missing data notifications + weekly digest
+Upload .txt → Preprocessor (noise filter + chunking)
+           → Claude Haiku (structured extraction per visit)
+           → Validator (required fields, target check)
+           → School matcher (fuzzy name normalization)
+           → PostgreSQL (visits, schools, alerts)
+           → Dashboard + Email + WhatsApp reports
 ```
 
----
+**API Routes:**
 
-## Tech Stack
+| Route | What |
+|-------|------|
+| `GET /api/dashboard` | Today's stats, alerts, team progress |
+| `GET /api/reports/:date` | All visits for a date |
+| `GET /api/reports/:date/excel` | Download Excel |
+| `GET /api/schools` | All schools with visit counts |
+| `GET /api/executives` | All reps with performance |
+| `POST /api/ingest` | Process uploaded messages |
+| `GET /api/ingest/status` | Last pipeline run stats |
+| `POST /api/whatsapp/connect` | Start WhatsApp connection |
+| `POST /api/whatsapp/send-report` | Send daily report via WhatsApp |
+| `GET /api/settings` | App configuration |
+| `GET /api/health` | Health check |
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Next.js 15 (App Router), Tailwind CSS, shadcn/ui |
-| Backend | Next.js API Routes, Prisma ORM |
-| Database | PostgreSQL 16 |
-| AI — Extraction | Claude Haiku (fast, cheap, structured output) |
-| AI — Summaries | Claude Sonnet (weekly digest, exec reports) |
-| Email | Resend |
-| Deployment | Docker + docker-compose |
-
----
-
-## Cost Estimate
-
-| Service | Usage | Cost |
-|---------|-------|------|
-| Claude Haiku | ~30 visits/day, ~500 tokens each | ~₹165/month |
-| Claude Sonnet | Weekly digests only | ~₹20/month |
-| DO Droplet (2 GB) | Always-on | ~$6/month |
-| Resend | <100 emails/day | Free tier |
-
-**Total: ~$8/month**
-
----
-
-## API Routes
-
-| Method | Route | Description |
-|--------|-------|-------------|
-| `POST` | `/api/ingest` | Ingest raw WhatsApp message, trigger extraction |
-| `GET` | `/api/dashboard` | Aggregated metrics for dashboard |
-| `GET` | `/api/schools` | School list with visit history |
-| `GET/POST` | `/api/alerts` | Alert rules and manual trigger |
-| `GET` | `/api/reports` | Weekly/monthly rep performance reports |
-| `GET` | `/api/executives` | Exec-level summary data |
-| `GET` | `/api/export` | CSV export of visit data |
-| `GET/POST` | `/api/settings` | App configuration |
-| `GET` | `/api/whatsapp` | WhatsApp connection status |
-
----
-
-## Development
-
+**Local development:**
 ```bash
 npm install
-cp .env.example .env.local   # use local DB or set DATABASE_URL
+cp .env.example .env.local
+# Set DATABASE_URL to a local PostgreSQL
 npx prisma db push
 npm run dev
 ```

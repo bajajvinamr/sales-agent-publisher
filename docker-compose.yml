@@ -18,8 +18,8 @@ services:
 
   app:
     build: .
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     environment:
       DATABASE_URL: postgresql://postgres:${DB_PASSWORD:-changeme}@db:5432/sales_tracker
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -31,6 +31,13 @@ services:
         condition: service_healthy
     command: >
       sh -c "npx prisma db push --skip-generate && node server.js"
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://app:3000
+    depends_on:
+      - app
 
 volumes:
   pgdata:

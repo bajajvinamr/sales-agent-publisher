@@ -30,7 +30,7 @@ services:
       db:
         condition: service_healthy
     command: >
-      sh -c "npx prisma db push --skip-generate && node server.js"
+      sh -c "npx prisma@6 db push --skip-generate && node server.js"
 
   tunnel:
     image: cloudflare/cloudflared:latest

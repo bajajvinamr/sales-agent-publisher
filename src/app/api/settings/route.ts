@@ -22,11 +22,32 @@ export async function GET() {
         whatsappGroupName: true,
         sessionStartDate: true,
         sessionEndDate: true,
+        googleSheetId: true,
+        googleSheetTab: true,
+        sheetSyncEnabled: true,
+        lastSheetSyncAt: true,
+        lastSheetSyncError: true,
         updatedAt: true,
       },
     })
 
-    return NextResponse.json({ settings })
+    const pendingSheetRows = await prisma.visit.count({
+      where: { sheetAppendedAt: null },
+    })
+
+    const { getServiceAccountEmail } = await import(
+      '@/lib/integrations/google-sheets'
+    )
+    const serviceAccountEmail = getServiceAccountEmail()
+
+    return NextResponse.json({
+      settings,
+      sheetSync: {
+        pendingRows: pendingSheetRows,
+        serviceAccountEmail,
+        credentialsConfigured: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+      },
+    })
   } catch (error) {
     console.error('[settings] GET error:', error)
     return NextResponse.json(
@@ -43,6 +64,9 @@ const patchSettingsSchema = z.object({
   whatsappGroupName: z.string().max(200).optional(),
   sessionStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
   sessionEndDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+  googleSheetId: z.string().max(200).optional(),
+  googleSheetTab: z.string().min(1).max(100).optional(),
+  sheetSyncEnabled: z.boolean().optional(),
 })
 
 export async function PATCH(request: Request) {
@@ -58,6 +82,12 @@ export async function PATCH(request: Request) {
     }
 
     const updates = parsed.data
+
+    // Normalize Google Sheet URL → ID if user pasted the full URL
+    if (typeof updates.googleSheetId === 'string' && updates.googleSheetId.includes('/')) {
+      const match = updates.googleSheetId.match(/\/d\/([a-zA-Z0-9-_]+)/)
+      if (match) updates.googleSheetId = match[1]
+    }
 
     // Convert date strings to Date objects for Prisma
     const data: Record<string, unknown> = { ...updates }
@@ -98,6 +128,11 @@ export async function PATCH(request: Request) {
         whatsappGroupName: true,
         sessionStartDate: true,
         sessionEndDate: true,
+        googleSheetId: true,
+        googleSheetTab: true,
+        sheetSyncEnabled: true,
+        lastSheetSyncAt: true,
+        lastSheetSyncError: true,
         updatedAt: true,
       },
     })

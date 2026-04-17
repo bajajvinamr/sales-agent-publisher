@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { RefreshCw, Save, Check } from 'lucide-react'
+import GoogleSheetSection from './GoogleSheetSection'
 
 interface Settings {
   dailyVisitTarget: number
@@ -123,6 +124,8 @@ export default function SettingsPage() {
             />
           </Field>
         </Section>
+
+        <GoogleSheetSection />
 
         <Section title="Session Period">
           <Field label="Start Date">

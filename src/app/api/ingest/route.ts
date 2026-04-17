@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { runPipeline } from '@/lib/pipeline/orchestrator'
+import { syncPendingVisits } from '@/lib/pipeline/sync-sheet'
 import { sendAlertEmail, sendDailySummaryEmail } from '@/lib/email'
 import { DEFAULT_CONFIG, type RawMessage } from '@/types'
 import { z } from 'zod'
@@ -61,9 +62,19 @@ export async function POST(request: Request) {
       console.error('[ingest] Email notification failed (non-fatal):', emailErr)
     }
 
+    // Real-time Google Sheets sync (non-blocking, never fails ingest).
+    // Safety net: the nightly cron catches anything missed here.
+    let sheetSync: Awaited<ReturnType<typeof syncPendingVisits>> | null = null
+    try {
+      sheetSync = await syncPendingVisits()
+    } catch (syncErr) {
+      console.error('[ingest] Sheet sync failed (non-fatal):', syncErr)
+    }
+
     return NextResponse.json({
       success: true,
       stats: result.run,
+      sheetSync,
     })
   } catch (error) {
     console.error('[ingest] POST error:', error)

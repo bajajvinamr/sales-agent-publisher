@@ -16,6 +16,8 @@ export default function ConnectPage() {
   const [capturedCount, setCapturedCount] = useState(0)
   const [groups, setGroups] = useState<{ name: string; id: string; participants: number }[]>([])
   const [loadingGroups, setLoadingGroups] = useState(false)
+  const [groupsError, setGroupsError] = useState<string | null>(null)
+  const [groupsLoaded, setGroupsLoaded] = useState(false)
   const [processing, setProcessing] = useState(false)
   const [processResult, setProcessResult] = useState<{ visits: number; alerts: number } | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -67,11 +69,26 @@ export default function ConnectPage() {
 
   const handleLoadGroups = async () => {
     setLoadingGroups(true)
+    setGroupsError(null)
     try {
-      const res = await fetch('/api/whatsapp/monitor')
-      const data = await res.json()
+      // Baileys may take a moment to sync groups after connect — retry once on empty.
+      let data: { groups?: typeof groups; error?: string } = {}
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const res = await fetch('/api/whatsapp/monitor')
+        data = await res.json()
+        if (!res.ok) {
+          throw new Error(data.error || `HTTP ${res.status}`)
+        }
+        if (data.groups && data.groups.length > 0) break
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 1500))
+      }
       setGroups(data.groups || [])
-    } catch {} finally { setLoadingGroups(false) }
+      setGroupsLoaded(true)
+    } catch (e) {
+      setGroupsError(e instanceof Error ? e.message : 'Failed to load groups')
+    } finally {
+      setLoadingGroups(false)
+    }
   }
 
   const handleMonitorGroup = async (groupName: string) => {
@@ -317,6 +334,16 @@ export default function ConnectPage() {
                         </button>
                       ))}
                     </div>
+                  )}
+                  {groupsError && (
+                    <p className="text-xs text-red-400 bg-red-950 border border-red-900 rounded-lg px-3 py-2">
+                      {groupsError}
+                    </p>
+                  )}
+                  {groupsLoaded && !groupsError && groups.length === 0 && (
+                    <p className="text-xs text-zinc-400 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2">
+                      No groups found yet — WhatsApp is still syncing. Wait ~10s and click again.
+                    </p>
                   )}
                 </div>
               ) : (

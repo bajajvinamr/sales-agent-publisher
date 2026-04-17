@@ -93,7 +93,6 @@ export async function connect(): Promise<{ status: BaileysStatus; error?: string
     const sock = makeWASocket({
       version,
       auth: authState,
-      printQRInTerminal: true,
       generateHighQualityLinkPreview: false,
     })
 

@@ -10,6 +10,8 @@ RUN npm ci
 # Build
 FROM base AS builder
 WORKDIR /app
+# Raise V8 heap so the build survives on small droplets (1-2GB RAM + swap).
+ENV NODE_OPTIONS="--max-old-space-size=3072"
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate

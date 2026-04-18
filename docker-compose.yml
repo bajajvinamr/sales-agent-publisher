@@ -39,6 +39,27 @@ services:
     command: >
       sh -c "npx prisma@6 db push --skip-generate && node server.js"
 
+  # Stable HTTPS URL via Tailscale Funnel.
+  # URL ends up as https://${TS_HOSTNAME}.<your-tailnet>.ts.net
+  # Requires TS_AUTHKEY in .env (generate at https://login.tailscale.com/admin/settings/keys)
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: salestracker
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY}
+      TS_HOSTNAME: salestracker
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./tailscale-config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  # Quick-tunnel fallback. Rotates URL on every restart, useful if Tailscale
+  # auth lapses. Comment out once Tailscale is proven stable.
   tunnel:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
@@ -48,3 +69,4 @@ services:
 
 volumes:
   pgdata:
+  tailscale-state:

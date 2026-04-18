@@ -1,7 +1,7 @@
-version: '3.8'
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: sales_tracker
       POSTGRES_USER: postgres
@@ -18,6 +18,7 @@ services:
 
   app:
     build: .
+    restart: unless-stopped
     expose:
       - "3000"
     environment:
@@ -28,6 +29,10 @@ services:
       NEXT_PUBLIC_APP_URL: ${APP_URL:-http://localhost:3000}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
       CRON_SECRET: ${CRON_SECRET:-}
+    volumes:
+      # Persist WhatsApp auth across container rebuilds so users don't have to
+      # re-pair every deploy. disconnect()/loggedOut wipes still apply.
+      - ./baileys_auth:/app/.baileys_auth
     depends_on:
       db:
         condition: service_healthy

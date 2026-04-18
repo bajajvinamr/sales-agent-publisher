@@ -9,3 +9,6 @@ prisma/dev.db
 .wwebjs_cache/
 .wwebjs_auth/
 .baileys_auth/
+baileys_auth/
+backups/
+docker-compose.yml.bak

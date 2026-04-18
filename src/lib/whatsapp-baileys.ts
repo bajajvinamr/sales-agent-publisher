@@ -299,6 +299,18 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
       return
     }
 
+    // Pairing timeout: close fires before user has ever connected. Baileys
+    // emits 408 after ~6 unscanned QR refreshes ("QR refs attempts ended").
+    // Treating this as transient + retrying just regenerates QRs the user
+    // isn't watching anyway, hammering Baileys' QR allocator.
+    if (state.lastConnectedAt === null && kind === 'transient') {
+      state.status = 'failed'
+      state.error = 'QR not scanned in time. Click Connect to generate a new QR.'
+      state.qrDataUrl = null
+      console.log('[Baileys] Pairing timed out — user did not scan')
+      return
+    }
+
     // Transient: WS dropped, network blip, server hiccup. Backoff + retry.
     state.reconnectAttempts += 1
     if (state.reconnectAttempts >= RECONNECT_POLICY.maxAttempts) {

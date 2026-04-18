@@ -14,10 +14,15 @@ export default function ConnectPage() {
   const [reportSent, setReportSent] = useState(false)
   const [monitoredGroup, setMonitoredGroup] = useState<string | null>(null)
   const [capturedCount, setCapturedCount] = useState(0)
+  const [totalCaptured, setTotalCaptured] = useState(0)
+  const [historicalForGroup, setHistoricalForGroup] = useState(0)
+  const [historySyncProgress, setHistorySyncProgress] = useState(0)
+  const [historySyncComplete, setHistorySyncComplete] = useState(false)
   const [groups, setGroups] = useState<{ name: string; id: string; participants: number }[]>([])
   const [loadingGroups, setLoadingGroups] = useState(false)
   const [groupsError, setGroupsError] = useState<string | null>(null)
   const [groupsLoaded, setGroupsLoaded] = useState(false)
+  const [groupSearch, setGroupSearch] = useState('')
   const [processing, setProcessing] = useState(false)
   const [processResult, setProcessResult] = useState<{ visits: number; alerts: number } | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -37,9 +42,18 @@ export default function ConnectPage() {
       if (data.error) setWaError(data.error)
       if (data.monitoredGroup) setMonitoredGroup(data.monitoredGroup)
       if (data.messagesCapturedToday !== undefined) setCapturedCount(data.messagesCapturedToday)
+      if (data.totalCaptured !== undefined) setTotalCaptured(data.totalCaptured)
+      if (data.historicalForGroup !== undefined) setHistoricalForGroup(data.historicalForGroup)
+      if (data.historySyncProgress !== undefined) setHistorySyncProgress(data.historySyncProgress)
+      if (data.historySyncComplete !== undefined) setHistorySyncComplete(data.historySyncComplete)
       if (data.status === 'connected' && pollRef.current) {
         clearInterval(pollRef.current)
         pollRef.current = null
+      }
+      // Clear stale group-error from a previous failed click — once connected,
+      // any prior "WhatsApp not connected" error from the monitor route is moot.
+      if (data.status === 'connected') {
+        setGroupsError(null)
       }
     } catch {}
   }, [])
@@ -65,6 +79,9 @@ export default function ConnectPage() {
     await fetch('/api/whatsapp/disconnect', { method: 'POST' })
     setWaStatus('disconnected')
     setQrDataUrl(null)
+    setGroupsError(null)
+    setGroups([])
+    setGroupsLoaded(false)
   }
 
   const handleLoadGroups = async () => {
@@ -327,13 +344,32 @@ export default function ConnectPage() {
                     {loadingGroups ? 'Loading groups...' : 'Load My Groups'}
                   </button>
                   {groups.length > 0 && (
-                    <div className="space-y-1 max-h-40 overflow-y-auto">
-                      {groups.map(g => (
-                        <button key={g.id} onClick={() => handleMonitorGroup(g.name)} className="w-full text-left px-3 py-2 rounded-lg text-xs bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 transition-colors text-zinc-200">
-                          {g.name} <span className="text-zinc-500">({g.participants} members)</span>
-                        </button>
-                      ))}
-                    </div>
+                    <>
+                      <input
+                        type="text"
+                        value={groupSearch}
+                        onChange={(e) => setGroupSearch(e.target.value)}
+                        placeholder={`Search ${groups.length} groups...`}
+                        className="w-full px-3 py-2 rounded-lg text-xs bg-zinc-800 border border-zinc-700 text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-amber-500"
+                        autoFocus
+                      />
+                      {(() => {
+                        const q = groupSearch.trim().toLowerCase()
+                        const filtered = q ? groups.filter(g => g.name.toLowerCase().includes(q)) : groups
+                        if (filtered.length === 0) {
+                          return <p className="text-xs text-zinc-500 px-3 py-2">No groups match "{groupSearch}"</p>
+                        }
+                        return (
+                          <div className="space-y-1 max-h-72 overflow-y-auto">
+                            {filtered.map(g => (
+                              <button key={g.id} onClick={() => handleMonitorGroup(g.name)} className="w-full text-left px-3 py-2 rounded-lg text-xs bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 transition-colors text-zinc-200">
+                                {g.name} <span className="text-zinc-500">({g.participants} members)</span>
+                              </button>
+                            ))}
+                          </div>
+                        )
+                      })()}
+                    </>
                   )}
                   {groupsError && (
                     <p className="text-xs text-red-400 bg-red-950 border border-red-900 rounded-lg px-3 py-2">
@@ -348,20 +384,29 @@ export default function ConnectPage() {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <div className="rounded-lg p-3 bg-zinc-800 border border-zinc-700">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-1">Monitoring Group</p>
+                  <div className="rounded-lg p-3 bg-zinc-800 border border-zinc-700 space-y-1">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Monitoring Group</p>
                     <p className="text-sm font-semibold text-zinc-100">{monitoredGroup}</p>
-                    <p className="text-xs text-amber-400 mt-1">{capturedCount} messages captured today</p>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs pt-1">
+                      <span className="text-amber-400">{totalCaptured} total ready</span>
+                      <span className="text-zinc-500">·</span>
+                      <span className="text-zinc-400">{historicalForGroup} from history</span>
+                      <span className="text-zinc-500">·</span>
+                      <span className="text-zinc-400">{capturedCount} today</span>
+                    </div>
+                    {!historySyncComplete && historySyncProgress > 0 && historySyncProgress < 100 && (
+                      <p className="text-[10px] text-zinc-500 pt-1">History sync: {historySyncProgress}%</p>
+                    )}
                   </div>
 
                   {/* Process captured messages */}
                   <button
                     onClick={handleProcessMessages}
-                    disabled={processing || capturedCount === 0}
+                    disabled={processing || totalCaptured === 0}
                     className="w-full flex items-center justify-center gap-1.5 py-3 rounded-lg text-sm font-bold bg-amber-500 text-zinc-950 hover:bg-amber-400 disabled:opacity-50 transition-colors"
                   >
                     {processing ? <RefreshCw size={14} className="animate-spin" /> : null}
-                    {processing ? 'Processing with AI...' : `Process ${capturedCount} Messages`}
+                    {processing ? 'Processing with AI...' : `Process ${totalCaptured} Messages`}
                   </button>
 
                   {processResult && (

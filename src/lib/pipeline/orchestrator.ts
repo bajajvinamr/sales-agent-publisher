@@ -46,6 +46,44 @@ export async function runPipeline(
   const execNameToId = new Map(executives.map((e) => [e.displayName.toLowerCase(), e.id]))
   const allExecutiveNames = executives.map((e) => e.displayName)
 
+  // Auto-onboard senders we've never seen before. Without this, every visit
+  // from a new rep is silently dropped at the FK guard further down.
+  const getOrCreateExecId = async (rawName: string): Promise<string | null> => {
+    const trimmed = rawName.trim()
+    if (!trimmed) return null
+    const key = trimmed.toLowerCase()
+    const cached = execNameToId.get(key)
+    if (cached) return cached
+
+    const id =
+      trimmed
+        .replace(/[^a-zA-Z0-9]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .toLowerCase() || `unnamed-${Date.now()}`
+
+    try {
+      const created = await prisma.executive.upsert({
+        where: { id },
+        update: {},
+        create: {
+          id,
+          name: trimmed,
+          displayName: trimmed,
+          dailyTarget: config.dailyTargetVisits,
+          active: true,
+        },
+      })
+      execNameToId.set(key, created.id)
+      if (!allExecutiveNames.includes(created.displayName)) {
+        allExecutiveNames.push(created.displayName)
+      }
+      return created.id
+    } catch {
+      return null
+    }
+  }
+
   // Cast schools for compatibility (SQLite stores aliases as string, PostgreSQL as string[])
   const parsedSchools = schools.map(s => ({
     ...s,
@@ -168,7 +206,7 @@ export async function runPipeline(
 
     // ── Persist visit to DB ────────────────────────────────────
     try {
-      const execId = execNameToId.get(chunk.senderNormalized.toLowerCase())
+      const execId = await getOrCreateExecId(chunk.senderNormalized)
 
       if (execId) {
         await prisma.visit.create({
@@ -226,7 +264,7 @@ export async function runPipeline(
   // ── Step 6: Persist alerts ───────────────────────────────────
   for (const alert of alerts) {
     try {
-      const execId = execNameToId.get(alert.executiveName.toLowerCase())
+      const execId = await getOrCreateExecId(alert.executiveName)
       if (execId) {
         await prisma.alert.create({
           data: {

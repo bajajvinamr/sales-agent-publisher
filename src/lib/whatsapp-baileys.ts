@@ -44,6 +44,11 @@ interface BaileysState {
   monitoredGroupName: string | null
   captureStartDate: string | null // YYYY-MM-DD
   messagesCapturedToday: number
+  // History sync — populated by 'messaging-history.set' events. Bucketed by
+  // remoteJid so we can grab the right group's backlog when the user picks one.
+  historicalByJid: Map<string, RawMessage[]>
+  historySyncProgress: number // 0–100, last value from Baileys
+  historySyncComplete: boolean
 }
 
 const AUTH_DIR = path.join(process.cwd(), '.baileys_auth')
@@ -74,6 +79,9 @@ const state: BaileysState = {
   monitoredGroupName: null,
   captureStartDate: null,
   messagesCapturedToday: 0,
+  historicalByJid: new Map(),
+  historySyncProgress: 0,
+  historySyncComplete: false,
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -148,6 +156,13 @@ function teardownSocket(): void {
 
 export function getStatus() {
   const today = new Date().toISOString().slice(0, 10)
+  const historicalForGroup = state.monitoredGroupJid
+    ? state.historicalByJid.get(state.monitoredGroupJid)?.length ?? 0
+    : 0
+  // Sum sizes across all buckets so the UI can show total history downloaded
+  // even before the user picks a group.
+  let historicalTotal = 0
+  for (const arr of state.historicalByJid.values()) historicalTotal += arr.length
   return {
     status: state.status,
     qrDataUrl: state.qrDataUrl,
@@ -155,6 +170,10 @@ export function getStatus() {
     monitoredGroup: state.monitoredGroupName,
     messagesCapturedToday: state.captureStartDate === today ? state.messagesCapturedToday : 0,
     totalCaptured: state.capturedMessages.length,
+    historicalForGroup,
+    historicalTotal,
+    historySyncProgress: state.historySyncProgress,
+    historySyncComplete: state.historySyncComplete,
   }
 }
 
@@ -207,12 +226,17 @@ async function openSocket(): Promise<{ status: BaileysStatus; error?: string }> 
       version,
       auth: authState,
       generateHighQualityLinkPreview: false,
+      // Ask WhatsApp for the full chat history on this pair. Without this we
+      // only get ~3 months of recent messages. The history arrives via
+      // 'messaging-history.set' events in chunks.
+      syncFullHistory: true,
     })
     state.socket = sock
 
     sock.ev.on('creds.update', saveCreds)
     sock.ev.on('connection.update', handleConnectionUpdate)
     sock.ev.on('messages.upsert', handleMessagesUpsert)
+    sock.ev.on('messaging-history.set', handleHistorySet)
 
     return { status: state.status }
   } catch (e) {
@@ -260,7 +284,9 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
 
     teardownSocket()
 
-    // Connection was healthy long enough to count as "good" — reset attempts.
+    // Capture before nulling — we need to know whether we were ever connected
+    // when classifying transient closes vs pairing timeouts further down.
+    const wasEverConnected = state.lastConnectedAt !== null
     if (
       state.lastConnectedAt &&
       Date.now() - state.lastConnectedAt >= RECONNECT_POLICY.healthyAfterMs
@@ -303,7 +329,7 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
     // emits 408 after ~6 unscanned QR refreshes ("QR refs attempts ended").
     // Treating this as transient + retrying just regenerates QRs the user
     // isn't watching anyway, hammering Baileys' QR allocator.
-    if (state.lastConnectedAt === null && kind === 'transient') {
+    if (!wasEverConnected && kind === 'transient') {
       state.status = 'failed'
       state.error = 'QR not scanned in time. Click Connect to generate a new QR.'
       state.qrDataUrl = null
@@ -407,6 +433,37 @@ export async function disconnect(): Promise<void> {
 
 // ── Message capture ──────────────────────────────────────────────────────────
 
+function handleHistorySet(payload: BaileysEventMap['messaging-history.set']): void {
+  const { messages, isLatest, progress } = payload
+  if (typeof progress === 'number') state.historySyncProgress = progress
+  if (isLatest) state.historySyncComplete = true
+
+  if (!messages?.length) {
+    if (isLatest) console.log('[Baileys] History sync complete')
+    return
+  }
+
+  let added = 0
+  for (const msg of messages) {
+    const jid = msg.key?.remoteJid
+    if (!jid) continue
+    if (msg.key?.fromMe) continue
+    const parsed = parseWAMessage(msg)
+    if (!parsed) continue
+
+    let bucket = state.historicalByJid.get(jid)
+    if (!bucket) {
+      bucket = []
+      state.historicalByJid.set(jid, bucket)
+    }
+    bucket.push(parsed)
+    added++
+  }
+  console.log(
+    `[Baileys] History chunk: +${added} messages across ${state.historicalByJid.size} chats (progress=${state.historySyncProgress}%${isLatest ? ', LATEST' : ''})`,
+  )
+}
+
 function handleMessagesUpsert(m: BaileysEventMap['messages.upsert']): void {
   if (m.type !== 'notify') return // only new messages, not history sync
 
@@ -473,12 +530,16 @@ export async function startMonitoringGroup(
   }
   try {
     const groups = await state.socket.groupFetchAllParticipating()
+    const needle = groupName.toLowerCase()
     const group = Object.values(groups).find((g) =>
-      g.subject.toLowerCase().includes(groupName.toLowerCase()),
+      // g.subject is undefined for some Baileys group types (community parents,
+      // freshly-created groups before sync); skip those.
+      g.subject?.toLowerCase().includes(needle),
     )
     if (!group) {
       const available = Object.values(groups)
         .map((g) => g.subject)
+        .filter((s): s is string => Boolean(s))
         .slice(0, 10)
         .join(', ')
       return { success: false, error: `Group "${groupName}" not found. Available: ${available}` }
@@ -492,6 +553,18 @@ export async function startMonitoringGroup(
     state.monitoredGroupName = group.subject
     state.captureStartDate = new Date().toISOString().slice(0, 10)
     state.messagesCapturedToday = 0
+
+    // Pull whatever history we already buffered for this group into the
+    // captured queue. Cap at 5000 to match the live-capture limit.
+    const historical = state.historicalByJid.get(group.id) ?? []
+    if (historical.length > 0) {
+      const combined = [...historical, ...state.capturedMessages]
+      state.capturedMessages = combined.slice(-5000)
+      console.log(
+        `[Baileys] Loaded ${historical.length} historical messages for ${group.subject}`,
+      )
+    }
+
     console.log(`[Baileys] Monitoring group: ${group.subject} (${group.id})`)
     return { success: true, groupName: group.subject }
   } catch (e) {
@@ -504,11 +577,14 @@ export async function listGroups(): Promise<{ name: string; id: string; particip
     throw new Error('WhatsApp not connected')
   }
   const groups = await state.socket.groupFetchAllParticipating()
-  return Object.values(groups).map((g) => ({
-    name: g.subject,
-    id: g.id,
-    participants: g.participants.length,
-  }))
+  return Object.values(groups)
+    .filter((g): g is typeof g & { subject: string } => Boolean(g.subject))
+    .map((g) => ({
+      name: g.subject,
+      id: g.id,
+      participants: g.participants?.length ?? 0,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 export async function sendMessage(phone: string, message: string): Promise<boolean> {

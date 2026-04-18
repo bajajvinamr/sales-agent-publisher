@@ -126,27 +126,6 @@ export default function SettingsPage() {
         </Section>
 
         <GoogleSheetSection />
-
-        <Section title="Session Period">
-          <Field label="Start Date">
-            <input
-              type="date"
-              value={settings.sessionStartDate}
-              onChange={(e) => update('sessionStartDate', e.target.value)}
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-sm text-zinc-100 transition-colors outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
-              style={{ colorScheme: 'dark' }}
-            />
-          </Field>
-          <Field label="End Date">
-            <input
-              type="date"
-              value={settings.sessionEndDate}
-              onChange={(e) => update('sessionEndDate', e.target.value)}
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-sm text-zinc-100 transition-colors outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
-              style={{ colorScheme: 'dark' }}
-            />
-          </Field>
-        </Section>
       </div>
 
       {error && (

@@ -1,5 +1,7 @@
-@import "tailwindcss" source("../**/*.{ts,tsx}");
+/* Google Fonts must come before tailwindcss — Tailwind v4 expands its @import
+   inline, and CSS requires all @imports precede other rules. */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import "tailwindcss" source("../**/*.{ts,tsx}");
 
 body {
   font-family: 'Inter', system-ui, sans-serif;

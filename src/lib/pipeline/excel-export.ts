@@ -109,6 +109,104 @@ export async function generateDailyReportExcel(
   return Buffer.from(buffer)
 }
 
+// ── DB row shape for the daily report route ──────────────────
+export interface DbVisitRow {
+  id: string
+  visitDate: Date
+  schoolNameRaw: string | null
+  address: string | null
+  board: string | null
+  strength: number | null
+  principalName: string | null
+  principalMobile: string | null
+  principalEmail: string | null
+  principalDob: string | null
+  bookSeller: string | null
+  remark: string | null
+  remarkDetail: string | null
+  locationUrl: string | null
+  dataComplete: boolean
+  missingFields: string[]
+  isRepeatVisit: boolean
+  visitNumberInSession: number
+  executive: { id: string; displayName: string }
+  school: { id: string; canonicalName: string } | null
+}
+
+function formatDetailsFromDb(visit: DbVisitRow): string {
+  const lines = [
+    `Board: ${visit.board ?? '—'}`,
+    `Strength: ${visit.strength ?? '—'}`,
+    `Principal: ${visit.principalName ?? '—'}`,
+    `Mobile No: ${visit.principalMobile ?? '—'}`,
+    `DOB: ${visit.principalDob ?? '—'}`,
+    `Email: ${visit.principalEmail ?? '—'}`,
+    `Book Seller: ${visit.bookSeller ?? '—'}`,
+  ]
+  return lines.join('\n')
+}
+
+// ── 1b. generateDailyReportExcelFromDb ───────────────────────
+// Same output as generateDailyReportExcel but accepts the raw
+// Prisma DB shape (with nested executive + school relations).
+export async function generateDailyReportExcelFromDb(
+  dbVisits: DbVisitRow[],
+  date: string
+): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook()
+  workbook.creator = 'WhatsApp Sales Agent'
+  workbook.created = new Date()
+
+  const sheet = workbook.addWorksheet(`Daily Report ${date}`)
+
+  sheet.columns = [
+    { header: 'Date',          key: 'date',     width: 14 },
+    { header: 'Employee Name', key: 'employee', width: 20 },
+    { header: 'School Name',   key: 'school',   width: 30 },
+    { header: 'Address',       key: 'address',  width: 30 },
+    { header: 'Details',       key: 'details',  width: 40 },
+    { header: 'Remark',        key: 'remark',   width: 30 },
+  ]
+
+  styleHeader(sheet.getRow(1))
+
+  for (const visit of dbVisits) {
+    const visitDateStr =
+      visit.visitDate instanceof Date
+        ? visit.visitDate.toISOString().split('T')[0]
+        : String(visit.visitDate)
+
+    const row = sheet.addRow({
+      date:     visitDateStr,
+      employee: visit.executive.displayName,
+      school:   visit.school?.canonicalName ?? visit.schoolNameRaw ?? '—',
+      address:  visit.address ?? '—',
+      details:  formatDetailsFromDb(visit),
+      remark:   visit.remark
+        ? visit.remarkDetail
+          ? `${visit.remark} — ${visit.remarkDetail}`
+          : visit.remark
+        : '—',
+    })
+
+    row.eachCell((cell, colNumber) => {
+      styleDataCell(cell, colNumber === 5)
+    })
+
+    row.height = 7 * 15
+  }
+
+  sheet.views = [{ state: 'frozen', ySplit: 1 }]
+
+  sheet.autoFilter = {
+    from: { row: 1, column: 1 },
+    to:   { row: 1, column: 6 },
+  }
+
+  const buffer = await workbook.xlsx.writeBuffer()
+  return Buffer.from(buffer)
+}
+
 // ── 2. generateWeeklyReportExcel ─────────────────────────────
 export async function generateWeeklyReportExcel(
   performances: ExecWeeklyPerformance[]

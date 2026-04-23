@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type {
   RawMessage,
   ValidatedVisit,
@@ -51,6 +52,8 @@ export async function runPipeline(
   const getOrCreateExecId = async (rawName: string): Promise<string | null> => {
     const trimmed = rawName.trim()
     if (!trimmed) return null
+    if (trimmed === 'Unknown') return null
+    if (/@(g\.us|s\.whatsapp\.net|broadcast|newsletter)$/i.test(trimmed)) return null
     const key = trimmed.toLowerCase()
     const cached = execNameToId.get(key)
     if (cached) return cached
@@ -209,12 +212,33 @@ export async function runPipeline(
       const execId = await getOrCreateExecId(chunk.senderNormalized)
 
       if (execId) {
-        await prisma.visit.create({
-          data: {
+        // Stable 16-char hash for dedup; fall back to sentinel when rawText is empty
+        const rawTextHash = createHash('md5')
+          .update(chunk.combinedText || '__no_text__')
+          .digest('hex')
+          .slice(0, 16)
+
+        const visitDate = new Date(`${chunk.date}T00:00:00.000Z`)
+
+        const visitMutableFields = {
+          schoolId: schoolMatchResult.matched ? schoolMatchResult.schoolId : null,
+          remark: extraction.data.remark,
+          remarkDetail: extraction.data.remarkDetail,
+          dataComplete,
+          missingFields: missingFields as any,
+          extractionModel: extraction.model,
+          isRepeatVisit: historyResult.isRepeatVisit,
+          visitNumberInSession: historyResult.visitNumberInSession,
+          changesFromLast: JSON.parse(JSON.stringify(historyResult.changesFromLast)),
+        }
+
+        await prisma.visit.upsert({
+          where: { uniq_exec_day_text: { executiveId: execId, visitDate, rawTextHash } },
+          create: {
             executiveId: execId,
-            schoolId: schoolMatchResult.matched ? schoolMatchResult.schoolId : null,
-            visitDate: new Date(`${chunk.date}T00:00:00.000Z`),
+            visitDate,
             rawText: chunk.combinedText,
+            rawTextHash,
             schoolNameRaw: extraction.data.schoolName,
             address: extraction.data.address,
             board: extraction.data.board,
@@ -224,16 +248,12 @@ export async function runPipeline(
             principalEmail: extraction.data.principalEmail,
             principalDob: extraction.data.principalDob,
             bookSeller: extraction.data.bookSeller,
-            remark: extraction.data.remark,
-            remarkDetail: extraction.data.remarkDetail,
             locationUrl: chunk.locationUrl,
-            dataComplete,
-            missingFields: missingFields as any,
-            extractionModel: extraction.model,
-            isRepeatVisit: historyResult.isRepeatVisit,
-            visitNumberInSession: historyResult.visitNumberInSession,
-            changesFromLast: JSON.parse(JSON.stringify(historyResult.changesFromLast)),
+            ...visitMutableFields,
           },
+          update: visitMutableFields,
+          // NOTE: sheetAppendedAt is intentionally excluded from update to
+          // avoid re-queueing already-synced rows on re-runs.
         })
 
         // Upsert school knowledge if we have enough data
@@ -266,6 +286,19 @@ export async function runPipeline(
     try {
       const execId = await getOrCreateExecId(alert.executiveName)
       if (execId) {
+        // Dedup: skip if an unresolved alert with same (exec, type, message) exists today
+        const today = new Date(`${runDate}T00:00:00.000Z`)
+        const existing = await prisma.alert.findFirst({
+          where: {
+            executiveId: execId,
+            alertType: alert.alertType,
+            message: alert.message,
+            resolved: false,
+            createdAt: { gte: today },
+          },
+        })
+        if (existing) continue
+
         await prisma.alert.create({
           data: {
             executiveId: execId,

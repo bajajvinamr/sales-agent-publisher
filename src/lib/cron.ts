@@ -25,13 +25,16 @@ export function startCron() {
     const hour = now.getHours()
     const minute = now.getMinutes()
 
-    // Run at 8:00 PM (20:00)
+    // Run at 8:00 PM (20:00) — container TZ=Asia/Kolkata per docker-compose.yml
     if (hour === 20 && minute === 0) {
-      // Guard: check if we already ran today
-      const today = new Date().toISOString().slice(0, 10)
-      const todayStart = new Date(today + 'T00:00:00Z')
+      // Guard: check if we already ran today. Use local-time date bounds
+      // (not UTC) so the guard window aligns with the operator's day.
+      // TZ=Asia/Kolkata, so toLocaleDateString('en-CA') → YYYY-MM-DD in IST.
+      const localToday = new Date().toLocaleDateString('en-CA') // YYYY-MM-DD in TZ
+      const todayStart = new Date(`${localToday}T00:00:00`)     // local midnight
+      const todayEnd   = new Date(`${localToday}T23:59:59.999`) // local end-of-day
       const existing = await prisma.ingestionRun.findFirst({
-        where: { runDate: { gte: todayStart } },
+        where: { runDate: { gte: todayStart, lte: todayEnd } },
       }).catch(() => null)
       if (existing) {
         console.log('[Cron] Already ran today, skipping')
@@ -53,7 +56,8 @@ export function stopCron() {
 }
 
 async function autoProcess() {
-  const today = new Date().toISOString().slice(0, 10)
+  // Use local (IST) date so today's messages align with the operator's day.
+  const today = new Date().toLocaleDateString('en-CA')
 
   try {
     const { status, monitoredGroup } = getStatus()

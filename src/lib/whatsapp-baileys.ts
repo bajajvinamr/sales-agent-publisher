@@ -475,6 +475,13 @@ function handleMessagesUpsert(m: BaileysEventMap['messages.upsert']): void {
     const parsed = parseWAMessage(msg)
     if (!parsed) continue
 
+    // Check if this message already exists in the last ~100 entries to avoid dupes
+    // from rapid reconnects or overlapping history sync + live capture
+    const keyOf = (m: RawMessage) => `${m.sender}|${m.date}|${m.time}|${m.message}`
+    const parsedKey = keyOf(parsed)
+    const alreadySeen = state.capturedMessages.slice(-100).some((m) => keyOf(m) === parsedKey)
+    if (alreadySeen) continue
+
     if (state.capturedMessages.length >= 5000) state.capturedMessages.shift()
     state.capturedMessages.push(parsed)
 
@@ -496,7 +503,12 @@ function parseWAMessage(msg: WAMessage): RawMessage | null {
   const ts = msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date()
   const date = ts.toISOString().slice(0, 10)
   const time = ts.toTimeString().slice(0, 5)
-  const sender = msg.pushName || msg.key.participant || msg.key.remoteJid || 'Unknown'
+  // remoteJid is the GROUP's JID in group chats, not an individual.
+  // If pushName and participant are both missing, we have no real human — skip the message.
+  const rawSender = msg.pushName || msg.key.participant
+  if (!rawSender) return null
+  if (/@(g\.us|broadcast|newsletter)$/i.test(rawSender)) return null
+  const sender = rawSender
 
   let messageType: RawMessage['messageType'] = 'Text'
   let url: string | undefined
@@ -558,10 +570,19 @@ export async function startMonitoringGroup(
     // captured queue. Cap at 5000 to match the live-capture limit.
     const historical = state.historicalByJid.get(group.id) ?? []
     if (historical.length > 0) {
-      const combined = [...historical, ...state.capturedMessages]
+      const seen = new Set<string>()
+      const keyOf = (m: RawMessage) => `${m.sender}|${m.date}|${m.time}|${m.message}`
+      const combined: RawMessage[] = []
+      for (const m of [...historical, ...state.capturedMessages]) {
+        const k = keyOf(m)
+        if (seen.has(k)) continue
+        seen.add(k)
+        combined.push(m)
+      }
       state.capturedMessages = combined.slice(-5000)
+      const dupes = historical.length + state.capturedMessages.length - combined.length
       console.log(
-        `[Baileys] Loaded ${historical.length} historical messages for ${group.subject}`,
+        `[Baileys] Loaded ${historical.length} historical messages for ${group.subject} (${dupes} dupes skipped)`,
       )
     }
 

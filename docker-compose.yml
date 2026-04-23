@@ -8,8 +8,11 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # NOTE: deliberately NOT publishing 5432 to the host. The `app` service
+    # reaches `db` on Docker's internal network via `db:5432`. Publishing
+    # would expose Postgres to the public internet if the host firewall is
+    # ever misconfigured. If you need direct DB access, use
+    # `docker compose exec db psql ...` or port-forward via SSH tunnel.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s

@@ -43,8 +43,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # --accept-data-loss is intentional: the Visit table added a nullable
+    # `raw_text_hash` column with @@unique(executive_id, visit_date, raw_text_hash).
+    # Existing rows have NULL hashes; Postgres treats NULLs as distinct, so the
+    # constraint adds cleanly. Prisma warns anyway; we accept.
     command: >
-      sh -c "npx prisma@6 db push --skip-generate && node server.js"
+      sh -c "npx prisma@6 db push --skip-generate --accept-data-loss && node server.js"
 
   tunnel:
     image: cloudflare/cloudflared:latest

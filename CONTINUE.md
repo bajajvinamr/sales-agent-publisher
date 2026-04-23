@@ -21,6 +21,7 @@
 - **Sync `CRON_SECRET`** — droplet `.env` and GitHub repo secret drifted after rotation. Check both match.
 - **Reconnect WhatsApp** — app container restart during deploys dropped the live Baileys socket; re-pair via `/connect` on the dashboard.
 - **Dependabot queue** — 7 open PRs (see triage note below).
+- **15 npm advisories** (2 critical, 1 high, 12 moderate) surfaced during lockfile regen. Not caused by this session's additions. Run `npm audit` + triage via dependabot sweep; do not blind `npm audit fix --force` (breaking changes).
 
 ### Known issues
 - ESLint step is `continue-on-error: true` — warnings won't surface until we clean the repo. Ratchet later.

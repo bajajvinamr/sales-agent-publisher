@@ -1,0 +1,96 @@
+name: CI
+
+# Runs on every PR and every push to main.
+# Failures block merge (once branch protection is on).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel previous runs when new commits land on the same PR/branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Fast feedback: lint + types + prisma validate (~45s) ────────
+  check:
+    name: typecheck + lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Generate Prisma client
+        # Prisma types are needed for tsc to pass. --no-engine is safe since
+        # we're not connecting to the DB here.
+        run: npx prisma generate
+
+      - name: Validate Prisma schema
+        run: npx prisma validate
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npx eslint . --max-warnings 0
+        continue-on-error: true  # report but don't block — ratchet up after repo is clean
+
+  # ── Slower: full next build + docker build (~3 min) ─────────────
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Next.js production build
+        # Set a dummy DATABASE_URL so Next doesn't try to connect during build.
+        env:
+          DATABASE_URL: postgresql://dummy:dummy@localhost:5432/dummy
+          ANTHROPIC_API_KEY: dummy
+          NODE_ENV: production
+        run: npx next build
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: sales-agent-publisher-app:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

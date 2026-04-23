@@ -1,0 +1,109 @@
+name: Deploy
+
+# Triggered after CI passes on main. SSHes into the droplet, pulls,
+# rebuilds, waits for /api/health to go green, rolls back on failure.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+  # Allow manual re-deploys (e.g. to redeploy HEAD without pushing)
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false  # never cancel a deploy mid-flight
+
+jobs:
+  deploy:
+    name: deploy to droplet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Only deploy when CI succeeded (or when manually triggered)
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Checkout (for rollback ref)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # need previous commit for rollback
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Record pre-deploy commit (for rollback)
+        id: pre
+        run: |
+          PRE_COMMIT=$(ssh -i ~/.ssh/id_ed25519 ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            'cd sales-agent-publisher && git rev-parse HEAD')
+          echo "sha=$PRE_COMMIT" >> $GITHUB_OUTPUT
+          echo "Pre-deploy HEAD: $PRE_COMMIT"
+
+      - name: Deploy
+        id: deploy
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} bash <<'REMOTE'
+            set -e
+            cd sales-agent-publisher
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose up -d --build
+          REMOTE
+
+      - name: Wait for health
+        id: health
+        run: |
+          URL="${{ secrets.APP_URL }}/api/health"
+          echo "Polling $URL for up to 90s..."
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /tmp/h.json -w "%{http_code}" "$URL" --max-time 5 || echo "000")
+            if [ "$CODE" = "200" ]; then
+              echo "Health OK after ${i} attempt(s)"
+              cat /tmp/h.json
+              echo ""
+              echo "ok=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ok=false" >> $GITHUB_OUTPUT
+          echo "::error::Health check never reached 200 within 90s"
+          exit 1
+
+      - name: Rollback on failure
+        if: failure() && steps.pre.outputs.sha != ''
+        run: |
+          echo "::warning::Deploy failed — rolling back to ${{ steps.pre.outputs.sha }}"
+          ssh -i ~/.ssh/id_ed25519 ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} bash <<REMOTE
+            set -e
+            cd sales-agent-publisher
+            git reset --hard ${{ steps.pre.outputs.sha }}
+            docker compose up -d --build
+          REMOTE
+
+      - name: Open issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Deploy failed: ${context.sha.slice(0,7)}`,
+              body: [
+                `**Commit:** ${context.sha}`,
+                `**Run:** ${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                `**Pre-deploy HEAD:** ${{ steps.pre.outputs.sha }} (rolled back to this)`,
+                `**Health check:** ${{ steps.health.outputs.ok == 'true' && '200 OK' || 'never reached 200' }}`,
+                ``,
+                `See the linked run for full logs.`,
+              ].join('\n'),
+              labels: ['deploy-failure', 'prod'],
+            })

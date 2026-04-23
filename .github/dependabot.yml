@@ -1,0 +1,44 @@
+version: 2
+
+updates:
+  # npm dependencies — weekly minor+patch, grouped to reduce PR noise
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    labels: [dependencies, automated]
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+      prisma:
+        patterns: [prisma, "@prisma/*"]
+      next:
+        patterns: [next, eslint-config-next]
+    ignore:
+      # Major-version upgrades get manual attention — they break everything.
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
+
+  # Docker base images — monthly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+      day: monday
+      time: "04:00"
+      timezone: Asia/Kolkata
+    labels: [docker, automated]
+
+  # GitHub Actions versions — monthly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      day: monday
+      time: "04:00"
+      timezone: Asia/Kolkata
+    labels: [ci, automated]

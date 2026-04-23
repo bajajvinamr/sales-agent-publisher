@@ -1,0 +1,20 @@
+# act config — runs .github/workflows/ locally in Docker.
+#
+# Flags explained:
+#   --container-architecture linux/amd64  — M-series Macs run x86 via emulation
+#   -P ubuntu-latest=...                  — use the bigger image so `npm ci` etc. works
+#                                           (the default tiny image is missing most tools)
+#   --action-offline-mode                 — don't re-download actions every run
+#   --artifact-server-path                — lets upload-artifact / cache actions work
+#
+# Usage:
+#   act pull_request             # run all PR workflows
+#   act pull_request -W .github/workflows/ci.yml   # just CI
+#   act -j check                 # just the typecheck+lint job
+#
+# Secrets: put them in .secrets (gitignored).
+
+--container-architecture linux/amd64
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+--action-offline-mode
+--artifact-server-path /tmp/act-artifacts

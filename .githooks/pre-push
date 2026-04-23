@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Runs .github/workflows/ci.yml locally via act before every `git push`.
+# Blocks push if typecheck, next build, or docker build fails.
+# Skip with:  git push --no-verify
+
+set -e
+
+if ! command -v act >/dev/null 2>&1; then
+  echo "[pre-push] act not installed. Install with: brew install act"
+  echo "[pre-push] Skipping local CI. Push will proceed."
+  exit 0
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "[pre-push] Docker is not running. Start Docker Desktop."
+  echo "[pre-push] Skipping local CI. Push will proceed."
+  exit 0
+fi
+
+echo "[pre-push] Running CI locally via act..."
+echo "[pre-push] (to skip: git push --no-verify)"
+echo
+
+# Run the 'check' and 'build' jobs from ci.yml
+# (Skip 'docker build' — it's slow and rarely regresses. Re-enable if it does.)
+if act pull_request -W .github/workflows/ci.yml -j check -j build --quiet; then
+  echo
+  echo "[pre-push] ✓ Local CI passed. Pushing."
+  exit 0
+else
+  echo
+  echo "[pre-push] ✗ Local CI failed. Fix the errors above, or push with --no-verify."
+  exit 1
+fi

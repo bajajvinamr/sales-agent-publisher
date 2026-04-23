@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { generateDailyReportExcel } from '@/lib/pipeline/excel-export'
+import { generateDailyReportExcelFromDb } from '@/lib/pipeline/excel-export'
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
@@ -48,7 +48,7 @@ export async function GET(
       },
     })
 
-    const buffer = await generateDailyReportExcel(visits as any, date)
+    const buffer = await generateDailyReportExcelFromDb(visits, date)
 
     return new Response(new Uint8Array(buffer), {
       status: 200,

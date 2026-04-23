@@ -1,3 +1,9 @@
+// Schema change log:
+// 2026-04-17 — Added rawTextHash (String?, @map("raw_text_hash")) to Visit and
+//              unique constraint @@unique([executiveId, visitDate, rawTextHash], name: "uniq_exec_day_text")
+//              to prevent duplicate rows when the pipeline re-processes the same messages.
+//              Deployed via `prisma db push` (no formal migration file needed — see docker-compose.yml:44).
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -50,6 +56,7 @@ model Visit {
   schoolId      String?  @map("school_id")
   visitDate     DateTime @map("visit_date") @db.Date
   rawText       String?  @map("raw_text")
+  rawTextHash   String?  @map("raw_text_hash") // md5[:16] of rawText; used for dedup unique constraint
 
   // Extracted fields
   schoolNameRaw    String?  @map("school_name_raw")
@@ -84,6 +91,7 @@ model Visit {
   school    School?   @relation(fields: [schoolId], references: [id])
   alerts    Alert[]
 
+  @@unique([executiveId, visitDate, rawTextHash], name: "uniq_exec_day_text")
   @@index([executiveId, visitDate])
   @@index([schoolId])
   @@index([visitDate])

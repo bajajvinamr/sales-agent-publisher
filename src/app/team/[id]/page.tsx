@@ -2,9 +2,39 @@
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
-import { format, parseISO } from 'date-fns'
+import { format, parseISO, addDays } from 'date-fns'
 import { Mail, RefreshCw, AlertTriangle } from 'lucide-react'
 
+// ── API response shape (matches /api/executives/[id]) ────────
+interface ApiResponse {
+  executive: {
+    id: string
+    displayName: string
+    email?: string | null
+    dailyTarget: number
+  }
+  weeklyPerformance: {
+    weekStart: string
+    weekEnd: string
+    dailyVisits: number[]   // length 6: Mon[0]…Sat[5]
+    totalVisits: number
+    weeklyTarget: number
+    targetMet: boolean
+    newSchools: number
+    samplingCount: number
+    meetingCount: number
+  }
+  thisWeekVisits: {
+    id: string
+    visitDate: string
+    schoolNameRaw: string | null
+    dataComplete: boolean
+    missingFields: string[]
+    school: { id: string; canonicalName: string } | null
+  }[]
+}
+
+// ── Derived UI types ──────────────────────────────────────────
 interface DailyVisit {
   date: string
   count: number
@@ -25,19 +55,43 @@ interface MissingData {
   fields: string[]
 }
 
-interface ExecutiveData {
-  id: string
-  displayName: string
-  dailyVisits: DailyVisit[]
-  stats: ExecStats
-  missingData: MissingData[]
+// ── Helpers ───────────────────────────────────────────────────
+const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+function safeFormatDate(raw: string, fmt: string, fallback: string): string {
+  try {
+    const d = parseISO(raw)
+    if (isNaN(d.getTime())) return fallback
+    return format(d, fmt)
+  } catch {
+    return fallback
+  }
 }
 
+function buildDailyVisits(weekStart: string, counts: number[]): DailyVisit[] {
+  // weekStart is a YYYY-MM-DD string (Monday of this week)
+  return counts.slice(0, 6).map((count, idx) => {
+    try {
+      const base = parseISO(weekStart)
+      if (isNaN(base.getTime())) throw new Error('invalid')
+      const day = addDays(base, idx)
+      return {
+        date: format(day, 'yyyy-MM-dd'),
+        count,
+        label: DAY_LABELS[idx] ?? String(idx),
+      }
+    } catch {
+      return { date: `day-${idx}`, count, label: DAY_LABELS[idx] ?? String(idx) }
+    }
+  })
+}
+
+// ── Page component ────────────────────────────────────────────
 export default function TeamPage() {
   const params = useParams()
   const id = typeof params.id === 'string' ? params.id : ''
 
-  const [data, setData] = useState<ExecutiveData | null>(null)
+  const [apiData, setApiData] = useState<ApiResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -49,8 +103,8 @@ export default function TeamPage() {
         setError(null)
         const res = await fetch(`/api/executives/${id}`)
         if (!res.ok) throw new Error('Failed to load executive data')
-        const json = await res.json()
-        setData(json)
+        const json: ApiResponse = await res.json()
+        setApiData(json)
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Unknown error')
       } finally {
@@ -76,9 +130,32 @@ export default function TeamPage() {
     )
   }
 
-  if (!data) return null
+  if (!apiData) return null
 
-  const { dailyVisits, stats } = data
+  const { executive, weeklyPerformance, thisWeekVisits } = apiData
+
+  // Derive UI values from the API response
+  const dailyVisits: DailyVisit[] = buildDailyVisits(
+    weeklyPerformance.weekStart,
+    weeklyPerformance.dailyVisits
+  )
+
+  const stats: ExecStats = {
+    weekTotal:     weeklyPerformance.totalVisits,
+    target:        weeklyPerformance.weeklyTarget,
+    newSchools:    weeklyPerformance.newSchools,
+    samplingCount: weeklyPerformance.samplingCount,
+    meetingCount:  weeklyPerformance.meetingCount,
+  }
+
+  const missingData: MissingData[] = thisWeekVisits
+    .filter((v) => !v.dataComplete)
+    .map((v) => ({
+      date:   v.visitDate,
+      school: v.school?.canonicalName ?? v.schoolNameRaw ?? '(unknown)',
+      fields: v.missingFields,
+    }))
+
   const maxVisits = Math.max(...dailyVisits.map((d) => d.count), 1)
   const targetMet = stats.weekTotal >= stats.target
 
@@ -86,7 +163,7 @@ export default function TeamPage() {
     <div className="py-5 space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-zinc-50">{data.displayName}</h1>
+        <h1 className="text-2xl font-bold text-zinc-50">{executive.displayName}</h1>
         <p className="text-sm text-zinc-500 mt-0.5">Weekly Performance</p>
       </div>
 
@@ -146,13 +223,13 @@ export default function TeamPage() {
       </div>
 
       {/* Missing data */}
-      {data.missingData && data.missingData.length > 0 && (
+      {missingData.length > 0 && (
         <div>
           <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">
             Incomplete Records
           </h2>
           <div className="space-y-2">
-            {data.missingData.map((item, i) => (
+            {missingData.map((item, i) => (
               <div
                 key={i}
                 className="bg-amber-950 border border-amber-500 rounded-lg px-3 py-2.5 flex items-start gap-2"
@@ -161,7 +238,7 @@ export default function TeamPage() {
                 <div>
                   <p className="text-xs font-semibold text-amber-400">{item.school}</p>
                   <p className="text-xs text-amber-400 mt-0.5 opacity-70">
-                    {format(parseISO(item.date), 'd MMM')} · Missing: {item.fields.join(', ')}
+                    {safeFormatDate(item.date, 'd MMM', item.date)} · Missing: {item.fields.join(', ')}
                   </p>
                 </div>
               </div>
@@ -173,7 +250,7 @@ export default function TeamPage() {
       {/* Action */}
       <button
         onClick={() => {
-          window.location.href = `mailto:?subject=Weekly Report - ${data.displayName}&body=Please find the weekly sales report attached.`
+          window.location.href = `mailto:?subject=Weekly Report - ${executive.displayName}&body=Please find the weekly sales report attached.`
         }}
         className="w-full flex items-center justify-center gap-2 bg-blue-600 text-zinc-50 rounded-xl py-3.5 text-sm font-semibold transition-colors hover:bg-blue-500"
       >

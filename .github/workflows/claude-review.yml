@@ -44,7 +44,7 @@ jobs:
 
       - name: Skip oversized diffs
         if: steps.diff.outputs.skip == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             await github.rest.issues.createComment({
@@ -110,7 +110,7 @@ jobs:
 
       - name: Post review comment
         if: steps.diff.outputs.skip != 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs')

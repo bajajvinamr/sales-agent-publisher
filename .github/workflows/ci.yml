@@ -47,6 +47,9 @@ jobs:
       - name: TypeScript check
         run: npx tsc --noEmit
 
+      - name: Unit tests (vitest)
+        run: npm test
+
       - name: ESLint
         run: npx eslint . --max-warnings 0
         continue-on-error: true  # report but don't block — ratchet up after repo is clean

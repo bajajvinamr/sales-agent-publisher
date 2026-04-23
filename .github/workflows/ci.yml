@@ -38,13 +38,20 @@ jobs:
         run: npx prisma generate
 
       - name: Validate Prisma schema
+        # Prisma reads DATABASE_URL via env() in schema.prisma; validate just needs
+        # the variable to exist, not to be reachable. Use a stub URL.
+        env:
+          DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
         run: npx prisma validate
 
       - name: TypeScript check
         run: npx tsc --noEmit
 
+      - name: Unit tests (vitest)
+        run: npm test
+
       - name: ESLint
-        run: npx eslint . --max-warnings 0
+        run: npm run lint
         continue-on-error: true  # report but don't block — ratchet up after repo is clean
 
   # ── Slower: full next build + docker build (~3 min) ─────────────

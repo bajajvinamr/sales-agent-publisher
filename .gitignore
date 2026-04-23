@@ -12,3 +12,7 @@ prisma/dev.db
 baileys_auth/
 backups/
 docker-compose.yml.bak
+
+# act — local GitHub Actions runner
+.secrets
+/tmp/act-artifacts

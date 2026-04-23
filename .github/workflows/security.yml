@@ -1,0 +1,96 @@
+name: Security
+
+# Weekly Monday 04:00 UTC scan. npm audit + Trivy CVE scan of the docker image.
+# Also runs on PRs that change package.json or Dockerfile.
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'  # Monday 04:00 UTC = 09:30 IST
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  security-events: write
+
+jobs:
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Audit (prod deps only, high+)
+        id: audit
+        run: |
+          set +e
+          npx npm audit --omit=dev --audit-level=high --json > /tmp/audit.json
+          RC=$?
+          echo "rc=$RC" >> $GITHUB_OUTPUT
+          COUNT=$(jq '.metadata.vulnerabilities | to_entries | map(select(.key == "high" or .key == "critical")) | map(.value) | add // 0' /tmp/audit.json)
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+          echo "$COUNT high/critical advisories found"
+          jq '.vulnerabilities | to_entries[] | select(.value.severity == "high" or .value.severity == "critical") | {name: .key, severity: .value.severity, via: .value.via, fix: .value.fixAvailable}' /tmp/audit.json || true
+
+      - name: Open issue on advisory
+        if: steps.audit.outputs.count != '0' && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs')
+            const audit = JSON.parse(fs.readFileSync('/tmp/audit.json', 'utf8'))
+            const rows = Object.entries(audit.vulnerabilities || {})
+              .filter(([_, v]) => ['high', 'critical'].includes(v.severity))
+              .map(([name, v]) => `- **${name}** (${v.severity}) — fix: ${JSON.stringify(v.fixAvailable)}`)
+              .join('\n')
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Security: ${rows.split('\n').length} high/critical advisory(ies)`,
+              body: [
+                `Weekly scan found prod-dep advisories.`,
+                ``,
+                rows,
+                ``,
+                `Run locally: \`npm audit --omit=dev --audit-level=high\``,
+                `Auto-fix where possible: \`npm audit fix\``,
+              ].join('\n'),
+              labels: ['security'],
+            })
+
+  trivy-image:
+    name: trivy CVE scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image for scan
+        uses: docker/setup-buildx-action@v3
+      - run: docker build -t sales-agent-publisher-app:scan .
+
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: sales-agent-publisher-app:scan
+          format: 'sarif'
+          output: 'trivy.sarif'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy.sarif'

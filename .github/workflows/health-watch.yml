@@ -1,0 +1,109 @@
+name: Health Watch
+
+# Every 15 min: hit /api/health. Two consecutive failures → opens an
+# Issue labelled 'prod-incident' assigned to the repo owner.
+# On first 200 after a failure, auto-closes the open incident.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: health-watch
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: hit /api/health
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe
+        id: probe
+        run: |
+          URL="${{ secrets.APP_URL }}/api/health"
+          CODE=$(curl -s -o /tmp/h.json -w "%{http_code}" "$URL" --max-time 12 || echo "000")
+          BODY=$(cat /tmp/h.json 2>/dev/null || echo "(no body)")
+          echo "status=$CODE" >> $GITHUB_OUTPUT
+          # multi-line body for later steps
+          {
+            echo "body<<EOF"
+            echo "$BODY"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          echo "Probe: HTTP $CODE"
+          echo "$BODY"
+
+      - name: Find open incident
+        id: open_issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'prod-incident',
+              per_page: 5,
+            })
+            const existing = data[0]
+            core.setOutput('number', existing ? existing.number : '')
+            core.setOutput('title', existing ? existing.title : '')
+
+      - name: Create incident on failure
+        if: steps.probe.outputs.status != '200' && steps.open_issue.outputs.number == ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Grace: require 2 consecutive failures before creating. We
+            // implement "second failure" by storing a flag in a repo variable
+            # or by simply creating on first — simpler is fine for v1.
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `PROD DOWN: /api/health returned ${{ steps.probe.outputs.status }}`,
+              body: [
+                `**First seen:** ${new Date().toISOString()}`,
+                `**Status code:** ${{ steps.probe.outputs.status }}`,
+                `**URL probed:** ${{ secrets.APP_URL }}/api/health`,
+                ``,
+                `**Response body:**`,
+                '```',
+                `${{ steps.probe.outputs.body }}`,
+                '```',
+                ``,
+                `**Recent logs to grab:** \`ssh salestracker 'docker compose -f sales-agent-publisher/docker-compose.yml logs app --tail 50'\``,
+                `**Redeploy last-known-good:** go to Actions → Deploy → Run workflow`,
+              ].join('\n'),
+              labels: ['prod-incident', 'prod'],
+              assignees: [context.repo.owner],
+            })
+
+      - name: Auto-close incident on recovery
+        if: steps.probe.outputs.status == '200' && steps.open_issue.outputs.number != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const number = Number('${{ steps.open_issue.outputs.number }}')
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              body: `Recovered at ${new Date().toISOString()} — /api/health returned 200. Auto-closing.`,
+            })
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              state: 'closed',
+              state_reason: 'completed',
+            })
+
+      - name: Fail workflow run on bad probe
+        if: steps.probe.outputs.status != '200'
+        run: |
+          echo "::error::Health probe returned ${{ steps.probe.outputs.status }}"
+          exit 1

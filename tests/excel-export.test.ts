@@ -33,7 +33,9 @@ function makeRow(overrides: Partial<DbVisitRow> = {}): DbVisitRow {
 
 async function readSheet(buf: Buffer) {
   const wb = new ExcelJS.Workbook()
-  await wb.xlsx.load(buf)
+  // Node 22's Buffer is generic (Buffer<ArrayBufferLike>); exceljs's types predate that.
+  // The runtime is identical — cast through unknown to satisfy the older signature.
+  await wb.xlsx.load(buf as unknown as Parameters<typeof wb.xlsx.load>[0])
   const sheet = wb.worksheets[0]
   const rows: string[][] = []
   sheet.eachRow((row) => {

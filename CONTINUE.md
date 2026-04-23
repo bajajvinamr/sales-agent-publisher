@@ -43,4 +43,7 @@ Defer:
 - #11 `node 20-slim → 25-slim` — major Node jump. Next 15 + Prisma 6 compatibility unclear. Hold until Node 22 LTS path is clear.
 
 ### Exact next step
-`git push -u origin chore/local-act-ci` (pre-push hook runs act) → `gh pr create --fill` → merge when green. Then pick the lowest-risk dependabot PR (#12) and run act against it.
+`git push -u origin chore/local-act-ci` (pre-push hook runs act check only, ~2 min) → `gh pr create --fill` → merge when green. Then start ticket 001 (`docs/tickets/001-lint-ratchet.md`) in a fresh session.
+
+### Forward plan
+Plan locked as `docs/PLAN-FORWARD-2026-04-23.md`. Four milestones (M1 test+lint ratchet, M2 observability, M3 named tunnel + staging, M4 30-day zero-data-loss streak). 90-day outcome target: 2026-07-22. Next retro: 2026-05-07.

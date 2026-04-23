@@ -51,7 +51,7 @@ jobs:
         run: npm test
 
       - name: ESLint
-        run: npx eslint . --max-warnings 0
+        run: npm run lint
         continue-on-error: true  # report but don't block — ratchet up after repo is clean
 
   # ── Slower: full next build + docker build (~3 min) ─────────────

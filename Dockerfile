@@ -1,4 +1,4 @@
-FROM node:20-slim AS base
+FROM node:25-slim AS base
 RUN apt-get update && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 

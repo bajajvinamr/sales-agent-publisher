@@ -21,9 +21,11 @@ echo "[pre-push] Running CI locally via act..."
 echo "[pre-push] (to skip: git push --no-verify)"
 echo
 
-# Run the 'check' and 'build' jobs from ci.yml
-# (Skip 'docker build' — it's slow and rarely regresses. Re-enable if it does.)
-if act pull_request -W .github/workflows/ci.yml -j check -j build --quiet; then
+# Run only the 'check' job (~2 min with cache). 'build' and 'docker build' run
+# server-side on GitHub; keeping them in the pre-push hook pushed total runtime
+# past GitHub's SSH idle timeout (~6 min) so the push died after the hook passed.
+# Run `act pull_request -j build` manually when you want a full local validation.
+if act pull_request -W .github/workflows/ci.yml -j check --quiet; then
   echo
   echo "[pre-push] ✓ Local CI passed. Pushing."
   exit 0

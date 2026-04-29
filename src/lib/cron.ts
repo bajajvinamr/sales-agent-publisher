@@ -114,7 +114,9 @@ async function autoProcess() {
     }
 
     // Send WhatsApp report to manager
-    if (settings?.managerPhone && /^\+?\d{10,15}$/.test(settings.managerPhone.trim())) {
+    const rawPhone = settings?.managerPhone?.trim() ?? ''
+    const normalizedPhone = rawPhone && /^\d{10}$/.test(rawPhone) ? `+91${rawPhone}` : rawPhone
+    if (normalizedPhone && /^\+\d{11,15}$/.test(normalizedPhone)) {
       const executives = await prisma.executive.findMany({ where: { active: true } })
       const topPerformers = Object.entries(
         result.visits.reduce<Record<string, number>>((acc, v) => {
@@ -124,7 +126,7 @@ async function autoProcess() {
       ).sort(([, a], [, b]) => b - a).slice(0, 5).map(([name, visits]) => ({ name, visits }))
 
       try {
-        await sendDailyReport(settings.managerPhone.trim(), {
+        await sendDailyReport(normalizedPhone, {
           date: today,
           totalVisits: result.summary.totalVisits,
           execsReporting: result.summary.totalExecutivesReporting,
@@ -136,7 +138,7 @@ async function autoProcess() {
         })
         console.log('[Cron] WhatsApp report sent to manager')
       } catch (e) { console.error('[Cron] WhatsApp report failed:', e) }
-    } else if (settings?.managerPhone) {
+    } else if (rawPhone) {
       console.warn('[Cron] managerPhone set but invalid format — WhatsApp report skipped.')
     }
 
@@ -177,7 +179,24 @@ async function autoProcess() {
   }
 }
 
+function getISOWeekKey(d: Date): string {
+  const jan4 = new Date(d.getFullYear(), 0, 4) // Jan 4 is always in week 1
+  const weekNum = Math.ceil(((d.getTime() - jan4.getTime()) / 86400000 + jan4.getDay() + 1) / 7)
+  return `${d.getFullYear()}-W${String(weekNum).padStart(2, '0')}`
+}
+
 async function autoWeekly(): Promise<void> {
+  // Guard: skip if we already ran this ISO week
+  const isoWeekKey = getISOWeekKey(new Date())
+  const lastRan = await prisma.settings.findUnique({ where: { id: 'default' }, select: { lastWeeklySentAt: true } }).catch(() => null)
+  if (lastRan?.lastWeeklySentAt) {
+    const lastKey = getISOWeekKey(lastRan.lastWeeklySentAt)
+    if (lastKey === isoWeekKey) {
+      console.log('[Cron] Weekly summary already sent this week, skipping')
+      return
+    }
+  }
+
   const today = new Date()
   const sunday = new Date(today)
   sunday.setDate(today.getDate() - 1)
@@ -256,6 +275,8 @@ async function autoWeekly(): Promise<void> {
       newSchools,
     })
     console.log(`[Cron] Weekly summary emailed to manager (${summaries.length} execs)`)
+    // Update guard timestamp
+    await prisma.settings.update({ where: { id: 'default' }, data: { lastWeeklySentAt: new Date() } }).catch(() => {})
   } catch (e) {
     console.error('[Cron] Weekly summary email failed:', e)
   }

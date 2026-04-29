@@ -166,6 +166,7 @@ model Settings {
   sheetSyncEnabled   Boolean @default(false) @map("sheet_sync_enabled")
   lastSheetSyncAt    DateTime? @map("last_sheet_sync_at")
   lastSheetSyncError String?   @map("last_sheet_sync_error")
+  lastWeeklySentAt   DateTime? @map("last_weekly_sent_at")
 
   updatedAt          DateTime @updatedAt @map("updated_at")
 

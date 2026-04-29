@@ -31,9 +31,10 @@ export function middleware(req: NextRequest) {
   const appPassword = process.env.APP_PASSWORD;
 
   if (!appPassword) {
-    console.warn(
-      "[middleware] APP_PASSWORD is not set — skipping auth (dev mode)"
-    );
+    if (process.env.NODE_ENV === 'production') {
+      return new NextResponse('Service Unavailable: APP_PASSWORD not configured', { status: 503 })
+    }
+    console.warn("[middleware] APP_PASSWORD is not set — skipping auth (dev mode)");
     return NextResponse.next();
   }
 

@@ -40,6 +40,7 @@ interface BaileysState {
   shuttingDown: boolean
   // Real-time message capture
   capturedMessages: RawMessage[]
+  capturedMessageKeys: Set<string>
   monitoredGroupJid: string | null
   monitoredGroupName: string | null
   captureStartDate: string | null // YYYY-MM-DD
@@ -101,6 +102,7 @@ const state: BaileysState = {
   reconnectTimer: null,
   shuttingDown: false,
   capturedMessages: [],
+  capturedMessageKeys: new Set(),
   monitoredGroupJid: null,
   monitoredGroupName: null,
   captureStartDate: null,
@@ -111,6 +113,10 @@ const state: BaileysState = {
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
+
+export function buildMessageKey(m: Pick<RawMessage, 'sender' | 'date' | 'time' | 'message'>): string {
+  return `${m.sender}|${m.date}|${m.time}|${m.message}`
+}
 
 export function getStatusCode(err: unknown): number | undefined {
   if (!err || typeof err !== 'object') return undefined
@@ -211,8 +217,11 @@ export function getCapturedMessages(date?: string): RawMessage[] {
 export function clearCapturedMessages(date?: string): void {
   if (date) {
     state.capturedMessages = state.capturedMessages.filter((m) => m.date !== date)
+    // Rebuild key set to stay in sync with the trimmed buffer
+    state.capturedMessageKeys = new Set(state.capturedMessages.map(buildMessageKey))
   } else {
     state.capturedMessages = []
+    state.capturedMessageKeys = new Set()
   }
 }
 
@@ -456,6 +465,7 @@ export async function disconnect(): Promise<void> {
     state.captureStartDate = null
     state.messagesCapturedToday = 0
     state.capturedMessages = []
+    state.capturedMessageKeys = new Set()
   } finally {
     state.shuttingDown = false
   }
@@ -486,6 +496,7 @@ function handleHistorySet(payload: BaileysEventMap['messaging-history.set']): vo
       bucket = []
       state.historicalByJid.set(jid, bucket)
     }
+    if (bucket.length >= 5000) bucket.shift()
     bucket.push(parsed)
     added++
   }
@@ -505,15 +516,13 @@ function handleMessagesUpsert(m: BaileysEventMap['messages.upsert']): void {
     const parsed = parseWAMessage(msg)
     if (!parsed) continue
 
-    // Check if this message already exists in the last ~100 entries to avoid dupes
-    // from rapid reconnects or overlapping history sync + live capture
-    const keyOf = (m: RawMessage) => `${m.sender}|${m.date}|${m.time}|${m.message}`
+    const keyOf = buildMessageKey
     const parsedKey = keyOf(parsed)
-    const alreadySeen = state.capturedMessages.slice(-100).some((m) => keyOf(m) === parsedKey)
-    if (alreadySeen) continue
+    if (state.capturedMessageKeys.has(parsedKey)) continue
 
     if (state.capturedMessages.length >= 5000) state.capturedMessages.shift()
     state.capturedMessages.push(parsed)
+    state.capturedMessageKeys.add(parsedKey)
 
     const today = new Date().toISOString().slice(0, 10)
     if (state.captureStartDate === today) {
@@ -601,7 +610,7 @@ export async function startMonitoringGroup(
     const historical = state.historicalByJid.get(group.id) ?? []
     if (historical.length > 0) {
       const seen = new Set<string>()
-      const keyOf = (m: RawMessage) => `${m.sender}|${m.date}|${m.time}|${m.message}`
+      const keyOf = buildMessageKey
       const combined: RawMessage[] = []
       for (const m of [...historical, ...state.capturedMessages]) {
         const k = keyOf(m)
@@ -610,6 +619,7 @@ export async function startMonitoringGroup(
         combined.push(m)
       }
       state.capturedMessages = combined.slice(-5000)
+      state.capturedMessageKeys = new Set(state.capturedMessages.map(buildMessageKey))
       const dupes = historical.length + state.capturedMessages.length - combined.length
       console.log(
         `[Baileys] Loaded ${historical.length} historical messages for ${group.subject} (${dupes} dupes skipped)`,

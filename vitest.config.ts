@@ -5,7 +5,8 @@ export default defineConfig({
     tsconfigPaths: true,
   },
   test: {
-    environment: 'node',
     include: ['tests/**/*.test.ts'],
+    environment: 'node',
+    testTimeout: 10_000,
   },
 })

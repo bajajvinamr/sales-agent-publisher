@@ -40,6 +40,7 @@ interface BaileysState {
   shuttingDown: boolean
   // Real-time message capture
   capturedMessages: RawMessage[]
+  capturedMessageKeys: Set<string>
   monitoredGroupJid: string | null
   monitoredGroupName: string | null
   captureStartDate: string | null // YYYY-MM-DD
@@ -52,6 +53,32 @@ interface BaileysState {
 }
 
 const AUTH_DIR = path.join(process.cwd(), '.baileys_auth')
+
+// ── Alert callback (registered by init.ts, keeps this module free of db/email deps) ──
+let alertHandler: ((message: string) => Promise<void> | void) | null = null
+
+export function setAlertHandler(fn: (message: string) => Promise<void> | void): void {
+  alertHandler = fn
+}
+
+export function buildDisconnectAlertMessage(
+  kind: 'loggedOut' | 'replaced' | 'qrTimeout' | 'maxReconnects',
+  attempts?: number
+): string {
+  switch (kind) {
+    case 'loggedOut':     return 'WhatsApp logged out — re-scan QR to reconnect.'
+    case 'replaced':      return 'WhatsApp session replaced by another device.'
+    case 'qrTimeout':     return 'QR not scanned in time — click Connect to generate a new QR.'
+    case 'maxReconnects': return `WhatsApp reconnect failed after ${attempts ?? '?'} attempts — manual reconnect needed.`
+  }
+}
+
+function fireAlert(message: string): void {
+  if (!alertHandler) return
+  Promise.resolve(alertHandler(message)).catch((e) =>
+    console.error('[Baileys] Alert handler failed:', e)
+  )
+}
 
 const RECONNECT_POLICY = {
   initialMs: 2_000,
@@ -75,6 +102,7 @@ const state: BaileysState = {
   reconnectTimer: null,
   shuttingDown: false,
   capturedMessages: [],
+  capturedMessageKeys: new Set(),
   monitoredGroupJid: null,
   monitoredGroupName: null,
   captureStartDate: null,
@@ -85,6 +113,10 @@ const state: BaileysState = {
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
+
+export function buildMessageKey(m: Pick<RawMessage, 'sender' | 'date' | 'time' | 'message'>): string {
+  return `${m.sender}|${m.date}|${m.time}|${m.message}`
+}
 
 export function getStatusCode(err: unknown): number | undefined {
   if (!err || typeof err !== 'object') return undefined
@@ -185,8 +217,11 @@ export function getCapturedMessages(date?: string): RawMessage[] {
 export function clearCapturedMessages(date?: string): void {
   if (date) {
     state.capturedMessages = state.capturedMessages.filter((m) => m.date !== date)
+    // Rebuild key set to stay in sync with the trimmed buffer
+    state.capturedMessageKeys = new Set(state.capturedMessages.map(buildMessageKey))
   } else {
     state.capturedMessages = []
+    state.capturedMessageKeys = new Set()
   }
 }
 
@@ -303,6 +338,7 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
       state.status = 'disconnected'
       state.qrDataUrl = null
       state.error = 'Logged out from WhatsApp. Click Connect to scan a new QR.'
+      fireAlert(buildDisconnectAlertMessage('loggedOut'))
       state.monitoredGroupJid = null
       state.monitoredGroupName = null
       return
@@ -314,6 +350,7 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
       state.status = 'disconnected'
       state.qrDataUrl = null
       state.error = 'Another device opened this WhatsApp session.'
+      fireAlert(buildDisconnectAlertMessage('replaced'))
       return
     }
 
@@ -332,6 +369,7 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
     if (!wasEverConnected && kind === 'transient') {
       state.status = 'failed'
       state.error = 'QR not scanned in time. Click Connect to generate a new QR.'
+      fireAlert(buildDisconnectAlertMessage('qrTimeout'))
       state.qrDataUrl = null
       console.log('[Baileys] Pairing timed out — user did not scan')
       return
@@ -342,6 +380,7 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
     if (state.reconnectAttempts >= RECONNECT_POLICY.maxAttempts) {
       state.status = 'failed'
       state.error = `Reconnect failed after ${state.reconnectAttempts} attempts. ${formatErr(err)}`
+      fireAlert(buildDisconnectAlertMessage('maxReconnects', state.reconnectAttempts))
       console.error('[Baileys]', state.error)
       return
     }
@@ -426,6 +465,7 @@ export async function disconnect(): Promise<void> {
     state.captureStartDate = null
     state.messagesCapturedToday = 0
     state.capturedMessages = []
+    state.capturedMessageKeys = new Set()
   } finally {
     state.shuttingDown = false
   }
@@ -456,6 +496,7 @@ function handleHistorySet(payload: BaileysEventMap['messaging-history.set']): vo
       bucket = []
       state.historicalByJid.set(jid, bucket)
     }
+    if (bucket.length >= 5000) bucket.shift()
     bucket.push(parsed)
     added++
   }
@@ -475,15 +516,13 @@ function handleMessagesUpsert(m: BaileysEventMap['messages.upsert']): void {
     const parsed = parseWAMessage(msg)
     if (!parsed) continue
 
-    // Check if this message already exists in the last ~100 entries to avoid dupes
-    // from rapid reconnects or overlapping history sync + live capture
-    const keyOf = (m: RawMessage) => `${m.sender}|${m.date}|${m.time}|${m.message}`
+    const keyOf = buildMessageKey
     const parsedKey = keyOf(parsed)
-    const alreadySeen = state.capturedMessages.slice(-100).some((m) => keyOf(m) === parsedKey)
-    if (alreadySeen) continue
+    if (state.capturedMessageKeys.has(parsedKey)) continue
 
     if (state.capturedMessages.length >= 5000) state.capturedMessages.shift()
     state.capturedMessages.push(parsed)
+    state.capturedMessageKeys.add(parsedKey)
 
     const today = new Date().toISOString().slice(0, 10)
     if (state.captureStartDate === today) {
@@ -501,7 +540,7 @@ function parseWAMessage(msg: WAMessage): RawMessage | null {
   if (!body && !msg.message?.locationMessage) return null
 
   const ts = msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date()
-  const date = ts.toISOString().slice(0, 10)
+  const date = ts.toLocaleDateString('en-CA')
   const time = ts.toTimeString().slice(0, 5)
   // remoteJid is the GROUP's JID in group chats, not an individual.
   // If pushName and participant are both missing, we have no real human — skip the message.
@@ -571,7 +610,7 @@ export async function startMonitoringGroup(
     const historical = state.historicalByJid.get(group.id) ?? []
     if (historical.length > 0) {
       const seen = new Set<string>()
-      const keyOf = (m: RawMessage) => `${m.sender}|${m.date}|${m.time}|${m.message}`
+      const keyOf = buildMessageKey
       const combined: RawMessage[] = []
       for (const m of [...historical, ...state.capturedMessages]) {
         const k = keyOf(m)
@@ -580,6 +619,7 @@ export async function startMonitoringGroup(
         combined.push(m)
       }
       state.capturedMessages = combined.slice(-5000)
+      state.capturedMessageKeys = new Set(state.capturedMessages.map(buildMessageKey))
       const dupes = historical.length + state.capturedMessages.length - combined.length
       console.log(
         `[Baileys] Loaded ${historical.length} historical messages for ${group.subject} (${dupes} dupes skipped)`,

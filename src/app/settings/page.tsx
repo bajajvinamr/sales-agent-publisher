@@ -8,6 +8,7 @@ interface Settings {
   dailyVisitTarget: number
   alertEmail: string
   managerEmail: string
+  managerPhone: string
   whatsappGroupName: string
   sessionStartDate: string
   sessionEndDate: string
@@ -18,6 +19,7 @@ export default function SettingsPage() {
     dailyVisitTarget: 8,
     alertEmail: '',
     managerEmail: '',
+    managerPhone: '',
     whatsappGroupName: '',
     sessionStartDate: '',
     sessionEndDate: '',
@@ -110,6 +112,16 @@ export default function SettingsPage() {
               onChange={(e) => update('managerEmail', e.target.value)}
               className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-sm text-zinc-100 transition-colors outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 placeholder:text-zinc-500"
             />
+          </Field>
+          <Field label="Manager Phone">
+            <input
+              type="tel"
+              placeholder="+91XXXXXXXXXX"
+              value={settings.managerPhone}
+              onChange={(e) => update('managerPhone', e.target.value)}
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-sm text-zinc-100 transition-colors outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 placeholder:text-zinc-500"
+            />
+            <p className="mt-1 text-xs text-zinc-500">WhatsApp alert recipient (include country code)</p>
           </Field>
         </Section>
 

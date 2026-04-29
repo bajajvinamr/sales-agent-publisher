@@ -155,6 +155,7 @@ model Settings {
   dailyTargetVisits  Int    @default(8) @map("daily_target_visits")
   alertEmailTo       String @default("") @map("alert_email_to")
   managerEmail       String @default("") @map("manager_email")
+  managerPhone       String @default("") @map("manager_phone")
   sessionStartDate   DateTime? @map("session_start_date") @db.Date
   sessionEndDate     DateTime? @map("session_end_date") @db.Date
   whatsappGroupName  String @default("") @map("whatsapp_group_name")

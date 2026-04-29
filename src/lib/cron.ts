@@ -10,7 +10,8 @@
 
 import { getCapturedMessages, clearCapturedMessages, getStatus, sendDailyReport } from './whatsapp-baileys'
 import { runPipeline } from './pipeline/orchestrator'
-import { sendAlertEmail, sendDailySummaryEmail } from './email'
+import { sendAlertEmail, sendDailySummaryEmail, sendWeeklySummaryEmail } from './email'
+import { generateWeeklySummary } from './ai'
 import { prisma } from './db'
 import { DEFAULT_CONFIG } from '@/types'
 
@@ -25,6 +26,11 @@ export function startCron() {
     const hour = now.getHours()
     const minute = now.getMinutes()
 
+    // Monday 9 AM: send weekly summary to manager
+    if (hour === 9 && minute === 0 && now.getDay() === 1) {
+      void autoWeekly().catch((e) => console.error('[Cron] Weekly summary failed:', e))
+    }
+
     // Run at 8:00 PM (20:00) — container TZ=Asia/Kolkata per docker-compose.yml
     if (hour === 20 && minute === 0) {
       // Guard: check if we already ran today. Use local-time date bounds
@@ -35,7 +41,10 @@ export function startCron() {
       const todayEnd   = new Date(`${localToday}T23:59:59.999`) // local end-of-day
       const existing = await prisma.ingestionRun.findFirst({
         where: { runDate: { gte: todayStart, lte: todayEnd } },
-      }).catch(() => null)
+      }).catch((err: unknown) => {
+        console.error('[Cron] Guard query failed — proceeding without guard:', err)
+        return null
+      })
       if (existing) {
         console.log('[Cron] Already ran today, skipping')
         return
@@ -105,8 +114,7 @@ async function autoProcess() {
     }
 
     // Send WhatsApp report to manager
-    if (settings?.managerEmail) {
-      // Use manager's phone if available from executives table
+    if (settings?.managerPhone && /^\+?\d{10,15}$/.test(settings.managerPhone.trim())) {
       const executives = await prisma.executive.findMany({ where: { active: true } })
       const topPerformers = Object.entries(
         result.visits.reduce<Record<string, number>>((acc, v) => {
@@ -115,29 +123,140 @@ async function autoProcess() {
         }, {})
       ).sort(([, a], [, b]) => b - a).slice(0, 5).map(([name, visits]) => ({ name, visits }))
 
-      // Try sending to alertEmailTo as phone (if it's a number)
-      const managerPhone = settings.alertEmailTo?.match(/^\d{10,13}$/)?.[0]
-      if (managerPhone) {
-        try {
-          await sendDailyReport(managerPhone, {
-            date: today,
-            totalVisits: result.summary.totalVisits,
-            execsReporting: result.summary.totalExecutivesReporting,
-            totalExecs: executives.length,
-            targetsMet: result.summary.targetsMetCount,
-            topPerformers,
-            alerts: result.alerts.slice(0, 5).map(a => ({ exec: a.executiveName, message: a.message })),
-            summaryText: result.summary.summaryText ?? undefined,
-          })
-          console.log('[Cron] WhatsApp report sent to manager')
-        } catch (e) { console.error('[Cron] WhatsApp report failed:', e) }
-      }
+      try {
+        await sendDailyReport(settings.managerPhone.trim(), {
+          date: today,
+          totalVisits: result.summary.totalVisits,
+          execsReporting: result.summary.totalExecutivesReporting,
+          totalExecs: executives.length,
+          targetsMet: result.summary.targetsMetCount,
+          topPerformers,
+          alerts: result.alerts.slice(0, 5).map(a => ({ exec: a.executiveName, message: a.message })),
+          summaryText: result.summary.summaryText ?? undefined,
+        })
+        console.log('[Cron] WhatsApp report sent to manager')
+      } catch (e) { console.error('[Cron] WhatsApp report failed:', e) }
+    } else if (settings?.managerPhone) {
+      console.warn('[Cron] managerPhone set but invalid format — WhatsApp report skipped.')
     }
 
     // Clear processed messages
     clearCapturedMessages(today)
     console.log(`[Cron] Done for ${today}`)
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
     console.error('[Cron] Auto-processing failed:', e)
+
+    try {
+      await prisma.ingestionRun.create({
+        data: {
+          runDate: new Date(`${today}T00:00:00`),
+          messagesScraped: 0,
+          messagesAfterFilter: 0,
+          chunksCreated: 0,
+          visitsExtracted: 0,
+          alertsGenerated: 0,
+          haikuTokensUsed: 0,
+          sonnetTokensUsed: 0,
+          status: 'failed',
+          errorLog: `[Cron] autoProcess failed: ${msg}`,
+        },
+      })
+    } catch { /* don't mask the original */ }
+
+    try {
+      const s = await prisma.settings.findUnique({ where: { id: 'default' } })
+      if (s?.alertEmailTo) {
+        await sendAlertEmail(s.alertEmailTo, [{
+          type: 'PIPELINE_FAILURE',
+          message: `8 PM auto-processing failed on ${today}: ${msg}`,
+          executive: 'System',
+        }])
+      }
+    } catch { /* best effort */ }
+  }
+}
+
+async function autoWeekly(): Promise<void> {
+  const today = new Date()
+  const sunday = new Date(today)
+  sunday.setDate(today.getDate() - 1)
+  const monday = new Date(sunday)
+  monday.setDate(sunday.getDate() - 6)
+
+  const weekStart = monday.toLocaleDateString('en-CA')
+  const weekEnd   = sunday.toLocaleDateString('en-CA')
+
+  console.log(`[Cron] Generating weekly summary ${weekStart} → ${weekEnd}`)
+
+  const executives = await prisma.executive.findMany({ where: { active: true } })
+  let totalVisits = 0
+  let newSchools = 0
+  const execsWithVisits = new Set<string>()
+  const summaries: { name: string; text: string }[] = []
+
+  for (const exec of executives) {
+    const visits = await prisma.visit.findMany({
+      where: {
+        executiveId: exec.id,
+        visitDate: {
+          gte: new Date(`${weekStart}T00:00:00.000Z`),
+          lte: new Date(`${weekEnd}T23:59:59.999Z`),
+        },
+      },
+    })
+    if (visits.length === 0) continue
+    execsWithVisits.add(exec.id)
+    totalVisits += visits.length
+    newSchools += visits.filter((v) => !v.isRepeatVisit).length
+
+    const byDate = new Map<string, number>()
+    for (const v of visits) {
+      const d = v.visitDate.toISOString().slice(0, 10)
+      byDate.set(d, (byDate.get(d) ?? 0) + 1)
+    }
+
+    try {
+      const { text } = await generateWeeklySummary({
+        name: exec.displayName,
+        weekStart,
+        weekEnd,
+        dailyVisits: Array.from(byDate.values()),
+        weeklyTarget: exec.dailyTarget * 5,
+        totalVisits: visits.length,
+        newSchools: visits.filter((v) => !v.isRepeatVisit).length,
+        repeatVisits: visits.filter((v) => v.isRepeatVisit).length,
+        samplingCount: visits.filter((v) => v.remark === 'Sampling').length,
+        meetingCount: visits.filter((v) => v.remark === 'Meeting with Principal').length,
+        missingDataCount: visits.filter((v) => !v.dataComplete).length,
+      })
+      summaries.push({ name: exec.displayName, text })
+    } catch (e) {
+      console.error(`[Cron] Weekly summary for ${exec.displayName} failed:`, e)
+    }
+  }
+
+  if (summaries.length === 0) {
+    console.log('[Cron] No weekly summaries generated (no visits this week)')
+    return
+  }
+
+  const settings = await prisma.settings.findUnique({ where: { id: 'default' } })
+  if (!settings?.managerEmail) {
+    console.log('[Cron] Weekly summaries generated but no managerEmail set')
+    return
+  }
+
+  const combined = summaries.map((s) => `--- ${s.name} ---\n${s.text}`).join('\n\n')
+  try {
+    await sendWeeklySummaryEmail(settings.managerEmail, combined, {
+      weekStart, weekEnd, totalVisits,
+      execsReporting: execsWithVisits.size,
+      totalExecs: executives.length,
+      newSchools,
+    })
+    console.log(`[Cron] Weekly summary emailed to manager (${summaries.length} execs)`)
+  } catch (e) {
+    console.error('[Cron] Weekly summary email failed:', e)
   }
 }

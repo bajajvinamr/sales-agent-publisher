@@ -116,3 +116,31 @@ export async function sendDailySummaryEmail(
   if (!resend) { console.log('[email] RESEND_API_KEY not set, skipping email'); return }
   await resend.emails.send({ from: 'Sales Tracker <reports@yourdomain.com>', to, subject, html })
 }
+
+export async function sendWeeklySummaryEmail(
+  to: string,
+  summaryText: string,
+  stats: {
+    weekStart: string
+    weekEnd: string
+    totalVisits: number
+    execsReporting: number
+    totalExecs: number
+    newSchools: number
+  }
+): Promise<void> {
+  const subject = `Weekly Sales Summary: ${stats.weekStart} – ${stats.weekEnd}`
+
+  const html = `<h2>Weekly Sales Summary</h2>
+      <p><strong>Period:</strong> ${stats.weekStart} – ${stats.weekEnd}</p>
+      <ul>
+        <li>Total visits: ${stats.totalVisits}</li>
+        <li>Executives reporting: ${stats.execsReporting} / ${stats.totalExecs}</li>
+        <li>New schools: ${stats.newSchools}</li>
+      </ul>
+      <pre style="white-space:pre-wrap;font-family:sans-serif">${esc(summaryText)}</pre>`
+
+  const resend = getResend()
+  if (!resend) { console.log('[email] RESEND_API_KEY not set, skipping weekly summary email'); return }
+  await resend.emails.send({ from: 'Sales Tracker <reports@yourdomain.com>', to, subject, html })
+}

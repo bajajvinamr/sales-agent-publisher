@@ -531,7 +531,7 @@ function parseWAMessage(msg: WAMessage): RawMessage | null {
   if (!body && !msg.message?.locationMessage) return null
 
   const ts = msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date()
-  const date = ts.toISOString().slice(0, 10)
+  const date = ts.toLocaleDateString('en-CA')
   const time = ts.toTimeString().slice(0, 5)
   // remoteJid is the GROUP's JID in group chats, not an individual.
   // If pushName and participant are both missing, we have no real human — skip the message.

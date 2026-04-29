@@ -8,5 +8,6 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     environment: 'node',
     testTimeout: 10_000,
+    env: { TZ: 'Asia/Kolkata' },
   },
 })

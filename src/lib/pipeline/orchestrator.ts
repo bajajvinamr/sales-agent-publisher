@@ -82,8 +82,10 @@ export async function runPipeline(
         allExecutiveNames.push(created.displayName)
       }
       return created.id
-    } catch {
-      return null
+    } catch (err) {
+      throw new Error(
+        `Executive upsert failed for "${trimmed}": ${err instanceof Error ? err.message : String(err)}`
+      )
     }
   }
 
@@ -94,14 +96,24 @@ export async function runPipeline(
   }))
   const matchSchool = createSchoolMatcher(parsedSchools)
 
-  // ── Step 3: Load today's previous visits (for history comparison) ──
+  // ── Step 3: Load today's + yesterday's visits (for repeat detection) ──
   const todayStart = new Date(`${runDate}T00:00:00.000Z`)
   const todayEnd   = new Date(`${runDate}T23:59:59.999Z`)
+  const yesterdayStart = new Date(todayStart)
+  yesterdayStart.setUTCDate(yesterdayStart.getUTCDate() - 1)
 
-  const previousDbVisits = await prisma.visit.findMany({
-    where: { visitDate: { gte: todayStart, lte: todayEnd } },
-    include: { executive: true, school: true },
-  })
+  const [todayDbVisits, yesterdayDbVisits] = await Promise.all([
+    prisma.visit.findMany({
+      where: { visitDate: { gte: todayStart, lte: todayEnd } },
+      include: { executive: true, school: true },
+    }),
+    prisma.visit.findMany({
+      where: { visitDate: { gte: yesterdayStart, lt: todayStart } },
+      include: { executive: true, school: true },
+    }),
+  ])
+
+  const previousDbVisits = [...yesterdayDbVisits, ...todayDbVisits]
 
   // Convert DB visits to ValidatedVisit shape for history comparison
   const previousVisits: ValidatedVisit[] = previousDbVisits.map((v) => ({

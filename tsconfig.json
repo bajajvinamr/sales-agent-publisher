@@ -17,5 +17,5 @@
     "paths": { "@/*": ["./src/*"] }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules", "prisma/seed*.ts", "src/lib/pipeline/test-runner.ts", "src/lib/pipeline/self-eval.ts", "src/scraper/**"]
+  "exclude": ["node_modules", "prisma/seed*.ts", "src/lib/pipeline/test-runner.ts", "src/lib/pipeline/self-eval.ts", "src/scraper/**", "tests/**"]
 }

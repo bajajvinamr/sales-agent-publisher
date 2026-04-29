@@ -30,7 +30,7 @@ export async function runPipeline(
   let haikuTokensUsed = 0
   let sonnetTokensUsed = 0
 
-  const runDate = messages[0]?.date ?? new Date().toISOString().substring(0, 10)
+  const runDate = messages[0]?.date ?? new Date().toLocaleDateString('en-CA')
 
   // ── Step 1: Preprocess ──────────────────────────────────────
   const chunks = preprocess(messages)

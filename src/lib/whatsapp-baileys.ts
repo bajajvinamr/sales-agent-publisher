@@ -269,7 +269,11 @@ async function openSocket(): Promise<{ status: BaileysStatus; error?: string }> 
     state.socket = sock
 
     sock.ev.on('creds.update', saveCreds)
-    sock.ev.on('connection.update', handleConnectionUpdate)
+    sock.ev.on('connection.update', (update) => {
+      handleConnectionUpdate(update).catch((e) =>
+        console.error('[Baileys] handleConnectionUpdate uncaught error:', e)
+      )
+    })
     sock.ev.on('messages.upsert', handleMessagesUpsert)
     sock.ev.on('messaging-history.set', handleHistorySet)
 
@@ -466,6 +470,9 @@ export async function disconnect(): Promise<void> {
     state.messagesCapturedToday = 0
     state.capturedMessages = []
     state.capturedMessageKeys = new Set()
+    state.historicalByJid = new Map()
+    state.historySyncProgress = 0
+    state.historySyncComplete = false
   } finally {
     state.shuttingDown = false
   }
@@ -500,6 +507,17 @@ function handleHistorySet(payload: BaileysEventMap['messaging-history.set']): vo
     bucket.push(parsed)
     added++
   }
+  // Cap total JID count to prevent unbounded memory growth
+  if (state.historicalByJid.size > 200) {
+    // Remove oldest entries (Map iteration order is insertion order)
+    const toDelete = state.historicalByJid.size - 200
+    let deleted = 0
+    for (const key of state.historicalByJid.keys()) {
+      state.historicalByJid.delete(key)
+      if (++deleted >= toDelete) break
+    }
+  }
+
   console.log(
     `[Baileys] History chunk: +${added} messages across ${state.historicalByJid.size} chats (progress=${state.historySyncProgress}%${isLatest ? ', LATEST' : ''})`,
   )

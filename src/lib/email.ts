@@ -1,5 +1,9 @@
 import { Resend } from 'resend'
 
+function emailFrom(_role: 'alerts' | 'reports'): string {
+  return process.env.EMAIL_FROM ?? 'Sales Tracker <onboarding@resend.dev>'
+}
+
 function getResend() {
   const key = process.env.RESEND_API_KEY
   if (!key) return null
@@ -49,35 +53,7 @@ export async function sendAlertEmail(
 
   const resend = getResend()
   if (!resend) { console.log('[email] RESEND_API_KEY not set, skipping alert email'); return }
-  await resend.emails.send({ from: 'Sales Tracker <alerts@yourdomain.com>', to, subject, html })
-}
-
-export async function sendWeeklyDigest(
-  to: string,
-  summary: { name: string; text: string }[]
-): Promise<void> {
-  const subject = 'Sales Tracker: Weekly Performance Report'
-
-  const cards = summary
-    .map(
-      (s) => `
-        <div style="background:#18181b;border:1px solid #27272a;border-radius:8px;padding:16px;margin-bottom:12px;">
-          <h3 style="color:#f59e0b;margin:0 0 8px;">${esc(s.name)}</h3>
-          <p style="color:#d4d4d8;margin:0;line-height:1.6;">${esc(s.text)}</p>
-        </div>`
-    )
-    .join('')
-
-  const html = `
-    <div style="font-family:sans-serif;background:#09090b;padding:32px;max-width:700px;margin:0 auto;">
-      <h2 style="color:#f59e0b;margin:0 0 8px;">Weekly Performance Report</h2>
-      <p style="color:#a1a1aa;margin:0 0 24px;">Executive summary for the week ending ${todayFormatted()}</p>
-      ${cards}
-    </div>`
-
-  const resend = getResend()
-  if (!resend) { console.log('[email] RESEND_API_KEY not set, skipping email'); return }
-  await resend.emails.send({ from: 'Sales Tracker <reports@yourdomain.com>', to, subject, html })
+  await resend.emails.send({ from: emailFrom('alerts'), to, subject, html })
 }
 
 export async function sendDailySummaryEmail(
@@ -114,7 +90,7 @@ export async function sendDailySummaryEmail(
 
   const resend = getResend()
   if (!resend) { console.log('[email] RESEND_API_KEY not set, skipping email'); return }
-  await resend.emails.send({ from: 'Sales Tracker <reports@yourdomain.com>', to, subject, html })
+  await resend.emails.send({ from: emailFrom('reports'), to, subject, html })
 }
 
 export async function sendWeeklySummaryEmail(
@@ -142,5 +118,5 @@ export async function sendWeeklySummaryEmail(
 
   const resend = getResend()
   if (!resend) { console.log('[email] RESEND_API_KEY not set, skipping weekly summary email'); return }
-  await resend.emails.send({ from: 'Sales Tracker <reports@yourdomain.com>', to, subject, html })
+  await resend.emails.send({ from: emailFrom('reports'), to, subject, html })
 }

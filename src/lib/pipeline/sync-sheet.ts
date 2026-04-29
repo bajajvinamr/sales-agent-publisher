@@ -92,10 +92,15 @@ export async function syncPendingVisits(): Promise<SyncResult> {
 
       await appendVisitRows(settings.googleSheetId, tabName, batch)
 
-      await prisma.visit.updateMany({
-        where: { id: { in: batchIds } },
-        data: { sheetAppendedAt: new Date() },
-      })
+      try {
+        await prisma.visit.updateMany({
+          where: { id: { in: batchIds } },
+          data: { sheetAppendedAt: new Date() },
+        })
+      } catch (markErr) {
+        console.error('[sync-sheet] append succeeded but marking failed — next sync will re-append this batch:', markErr)
+        // Continue — don't fail the whole sync for a marking error
+      }
 
       appended += batch.length
     }

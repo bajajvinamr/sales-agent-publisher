@@ -60,7 +60,7 @@ jobs:
           script: |
             // Grace: require 2 consecutive failures before creating. We
             // implement "second failure" by storing a flag in a repo variable
-            # or by simply creating on first — simpler is fine for v1.
+            // or by simply creating on first — simpler is fine for v1.
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,

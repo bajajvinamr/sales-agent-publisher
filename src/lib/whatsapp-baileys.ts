@@ -53,6 +53,32 @@ interface BaileysState {
 
 const AUTH_DIR = path.join(process.cwd(), '.baileys_auth')
 
+// ── Alert callback (registered by init.ts, keeps this module free of db/email deps) ──
+let alertHandler: ((message: string) => Promise<void> | void) | null = null
+
+export function setAlertHandler(fn: (message: string) => Promise<void> | void): void {
+  alertHandler = fn
+}
+
+export function buildDisconnectAlertMessage(
+  kind: 'loggedOut' | 'replaced' | 'qrTimeout' | 'maxReconnects',
+  attempts?: number
+): string {
+  switch (kind) {
+    case 'loggedOut':     return 'WhatsApp logged out — re-scan QR to reconnect.'
+    case 'replaced':      return 'WhatsApp session replaced by another device.'
+    case 'qrTimeout':     return 'QR not scanned in time — click Connect to generate a new QR.'
+    case 'maxReconnects': return `WhatsApp reconnect failed after ${attempts ?? '?'} attempts — manual reconnect needed.`
+  }
+}
+
+function fireAlert(message: string): void {
+  if (!alertHandler) return
+  Promise.resolve(alertHandler(message)).catch((e) =>
+    console.error('[Baileys] Alert handler failed:', e)
+  )
+}
+
 const RECONNECT_POLICY = {
   initialMs: 2_000,
   maxMs: 30_000,
@@ -303,6 +329,7 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
       state.status = 'disconnected'
       state.qrDataUrl = null
       state.error = 'Logged out from WhatsApp. Click Connect to scan a new QR.'
+      fireAlert(buildDisconnectAlertMessage('loggedOut'))
       state.monitoredGroupJid = null
       state.monitoredGroupName = null
       return
@@ -314,6 +341,7 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
       state.status = 'disconnected'
       state.qrDataUrl = null
       state.error = 'Another device opened this WhatsApp session.'
+      fireAlert(buildDisconnectAlertMessage('replaced'))
       return
     }
 
@@ -332,6 +360,7 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
     if (!wasEverConnected && kind === 'transient') {
       state.status = 'failed'
       state.error = 'QR not scanned in time. Click Connect to generate a new QR.'
+      fireAlert(buildDisconnectAlertMessage('qrTimeout'))
       state.qrDataUrl = null
       console.log('[Baileys] Pairing timed out — user did not scan')
       return
@@ -342,6 +371,7 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
     if (state.reconnectAttempts >= RECONNECT_POLICY.maxAttempts) {
       state.status = 'failed'
       state.error = `Reconnect failed after ${state.reconnectAttempts} attempts. ${formatErr(err)}`
+      fireAlert(buildDisconnectAlertMessage('maxReconnects', state.reconnectAttempts))
       console.error('[Baileys]', state.error)
       return
     }

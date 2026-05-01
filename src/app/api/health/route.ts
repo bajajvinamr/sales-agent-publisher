@@ -1,10 +1,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { initApp } from '@/lib/init'
 import { getStatus } from '@/lib/whatsapp-baileys'
 
-// Initialize cron on first request
-initApp()
 
 export async function GET() {
   let dbConnected = false

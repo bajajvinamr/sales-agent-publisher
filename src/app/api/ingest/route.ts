@@ -16,7 +16,7 @@ const rawMessageSchema = z.object({
 })
 
 const ingestBodySchema = z.object({
-  messages: z.array(rawMessageSchema).min(1),
+  messages: z.array(rawMessageSchema).min(1).max(2000),
 })
 
 export async function POST(request: Request) {
@@ -64,17 +64,13 @@ export async function POST(request: Request) {
 
     // Real-time Google Sheets sync (non-blocking, never fails ingest).
     // Safety net: the nightly cron catches anything missed here.
-    let sheetSync: Awaited<ReturnType<typeof syncPendingVisits>> | null = null
-    try {
-      sheetSync = await syncPendingVisits()
-    } catch (syncErr) {
+    void syncPendingVisits().catch((syncErr) => {
       console.error('[ingest] Sheet sync failed (non-fatal):', syncErr)
-    }
+    })
 
     return NextResponse.json({
       success: true,
       stats: result.run,
-      sheetSync,
     })
   } catch (error) {
     console.error('[ingest] POST error:', error)

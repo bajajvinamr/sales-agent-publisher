@@ -11,9 +11,6 @@ function authorized(request: Request): boolean {
   const expected = `Bearer ${secret}`
   if (header === expected) return true
 
-  const url = new URL(request.url)
-  if (url.searchParams.get('secret') === secret) return true
-
   return false
 }
 

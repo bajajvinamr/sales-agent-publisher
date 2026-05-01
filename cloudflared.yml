@@ -1,0 +1,5 @@
+tunnel: 71149db3-660b-4e42-9e49-cc2f25409252
+ingress:
+  - hostname: sales.telligences.com
+    service: http://app:3000
+  - service: http_status:404

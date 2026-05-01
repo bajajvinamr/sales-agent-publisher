@@ -86,9 +86,13 @@ jobs:
         id: health
         run: |
           URL="${{ secrets.APP_URL }}/api/health"
-          echo "Polling $URL for up to 90s..."
-          for i in $(seq 1 30); do
-            CODE=$(curl -s -o /tmp/h.json -w "%{http_code}" "$URL" --max-time 5 || echo "000")
+          echo "Polling $URL for up to 3 minutes..."
+          echo "Target URL: $URL"
+          # Give app 20s to run prisma push and start Next.js
+          sleep 20
+          for i in $(seq 1 40); do
+            CODE=$(curl -s -o /tmp/h.json -w "%{http_code}" "$URL" --max-time 8 || echo "000")
+            echo "Attempt $i: HTTP $CODE"
             if [ "$CODE" = "200" ]; then
               echo "Health OK after ${i} attempt(s)"
               cat /tmp/h.json
@@ -96,10 +100,10 @@ jobs:
               echo "ok=true" >> $GITHUB_OUTPUT
               exit 0
             fi
-            sleep 3
+            sleep 5
           done
           echo "ok=false" >> $GITHUB_OUTPUT
-          echo "::error::Health check never reached 200 within 90s"
+          echo "::error::Health check never reached 200 within 3 minutes"
           exit 1
 
       - name: Rollback on failure

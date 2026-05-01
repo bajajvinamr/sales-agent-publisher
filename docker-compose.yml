@@ -53,9 +53,11 @@ services:
   tunnel:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --no-autoupdate run
+    command: tunnel --no-autoupdate --config /cloudflared.yml run
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    volumes:
+      - ./cloudflared.yml:/cloudflared.yml:ro
     depends_on:
       - app
 

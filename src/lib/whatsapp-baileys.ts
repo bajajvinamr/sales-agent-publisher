@@ -17,7 +17,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys'
 import QRCode from 'qrcode'
 import path from 'node:path'
-import { rm } from 'node:fs/promises'
+import { rm, readdir, unlink } from 'node:fs/promises'
 import type { RawMessage } from '@/types'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -152,10 +152,28 @@ function formatErr(err: unknown): string {
 }
 
 async function wipeAuthDir(): Promise<void> {
+  // Try rm -rf first; if the directory is EBUSY (Baileys still holds file
+  // handles from the last creds.update write), fall back to unlinking each
+  // file individually — Linux allows unlink on open files.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await rm(AUTH_DIR, { recursive: true, force: true })
+      return
+    } catch (e: unknown) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (code !== 'EBUSY' || attempt === 2) {
+        console.warn('[Baileys] Failed to wipe auth dir:', formatErr(e))
+        return
+      }
+      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)))
+    }
+  }
+  // Last-resort: unlink individual files, leave the empty dir
   try {
-    await rm(AUTH_DIR, { recursive: true, force: true })
-  } catch (e) {
-    console.warn('[Baileys] Failed to wipe auth dir:', formatErr(e))
+    const files = await readdir(AUTH_DIR)
+    await Promise.all(files.map((f) => unlink(path.join(AUTH_DIR, f)).catch(() => {})))
+  } catch {
+    // directory may not exist — that's fine
   }
 }
 

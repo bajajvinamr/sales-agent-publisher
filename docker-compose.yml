@@ -24,6 +24,12 @@ services:
     restart: unless-stopped
     expose:
       - "3000"
+    # Bind to host's loopback only — lets deploy.yml health check curl
+    # localhost:3000 from the droplet (bypassing Cloudflare/tunnel which can
+    # return cached 503s during a rebuild). Public traffic still goes through
+    # the tunnel via the docker-internal `app:3000` route, NOT this binding.
+    ports:
+      - "127.0.0.1:3000:3000"
     environment:
       DATABASE_URL: postgresql://postgres:${DB_PASSWORD:-changeme}@db:5432/sales_tracker
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}

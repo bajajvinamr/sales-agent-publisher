@@ -85,17 +85,31 @@ jobs:
       - name: Wait for health
         id: health
         run: |
-          URL="${{ secrets.APP_URL }}/api/health"
-          echo "Polling $URL for up to 3 minutes..."
-          echo "Target URL: $URL"
+          # Probe localhost:3000 from inside the droplet (NOT the public URL)
+          # to bypass the Cloudflare → tunnel → app path. The tunnel can hold
+          # stale TCP cache to the previous app container for an unpredictable
+          # window after a rebuild, returning 503s that look like an app-level
+          # failure but are infrastructure. Localhost goes straight to the
+          # rebuilt container via the host loopback binding in docker-compose.
+          echo "Polling http://localhost:3000/api/health on droplet for up to 3 minutes..."
           # Give app 20s to run prisma push and start Next.js
           sleep 20
           for i in $(seq 1 40); do
-            CODE=$(curl -s -o /tmp/h.json -w "%{http_code}" "$URL" --max-time 8 || echo "000")
+            CODE=$(ssh -i ~/.ssh/id_ed25519 \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=8 \
+              -o BatchMode=yes \
+              ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+              "curl -s -o /tmp/h.json -w '%{http_code}' http://localhost:3000/api/health --max-time 5 || echo '000'" \
+              2>/dev/null || echo "000")
             echo "Attempt $i: HTTP $CODE"
             if [ "$CODE" = "200" ]; then
               echo "Health OK after ${i} attempt(s)"
-              cat /tmp/h.json
+              ssh -i ~/.ssh/id_ed25519 \
+                -o StrictHostKeyChecking=accept-new \
+                -o BatchMode=yes \
+                ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+                "cat /tmp/h.json" 2>/dev/null || true
               echo ""
               echo "ok=true" >> $GITHUB_OUTPUT
               exit 0

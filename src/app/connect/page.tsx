@@ -26,6 +26,11 @@ export default function ConnectPage() {
   const [processing, setProcessing] = useState(false)
   const [processResult, setProcessResult] = useState<{ visits: number; alerts: number } | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // If the user sits in 'connecting' for >15s the server is almost certainly
+  // jammed (stale auth dir, dead handshake). The lib auto-retries once on its
+  // own; this is the user-visible escape hatch when even that didn't resolve.
+  const [showForceReset, setShowForceReset] = useState(false)
+  const [resetting, setResetting] = useState(false)
 
   const [uploadState, setUploadState] = useState<UploadState>('idle')
   const [uploadResult, setUploadResult] = useState<{ visits: number; alerts: number } | null>(null)
@@ -63,6 +68,18 @@ export default function ConnectPage() {
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [pollStatus])
 
+  // Show the "Force reset" escape hatch if we've been stuck connecting for 15s.
+  // The lib has its own 10s auto-retry, so by 15s either auto-retry succeeded
+  // (waStatus moved to qr_ready) or it's exhausted and the user needs to step in.
+  useEffect(() => {
+    if (waStatus !== 'connecting') {
+      setShowForceReset(false)
+      return
+    }
+    const t = setTimeout(() => setShowForceReset(true), 15_000)
+    return () => clearTimeout(t)
+  }, [waStatus])
+
   const handleConnect = async () => {
     setWaStatus('connecting')
     setWaError(null)
@@ -77,11 +94,34 @@ export default function ConnectPage() {
 
   const handleDisconnect = async () => {
     await fetch('/api/whatsapp/disconnect', { method: 'POST' })
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
     setWaStatus('disconnected')
     setQrDataUrl(null)
     setGroupsError(null)
     setGroups([])
     setGroupsLoaded(false)
+  }
+
+  // Server-side force reset for the QR-trap stuck state. Calls disconnect()
+  // which wipes auth + clears all timers, then immediately re-enters connect
+  // so the user sees one continuous flow instead of having to click twice.
+  const handleForceReset = async () => {
+    setResetting(true)
+    setWaError(null)
+    try {
+      await fetch('/api/whatsapp/disconnect', { method: 'POST' })
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+      setShowForceReset(false)
+      setQrDataUrl(null)
+      // Brief settle for the server-side state machine before re-entering connect.
+      await new Promise((r) => setTimeout(r, 300))
+      await handleConnect()
+    } catch (e) {
+      setWaStatus('failed')
+      setWaError(e instanceof Error ? e.message : 'Force reset failed')
+    } finally {
+      setResetting(false)
+    }
   }
 
   const handleLoadGroups = async () => {
@@ -306,9 +346,21 @@ export default function ConnectPage() {
           )}
 
           {waStatus === 'connecting' && (
-            <div className="text-center py-4">
+            <div className="text-center py-4 space-y-3">
               <RefreshCw size={22} className="animate-spin mx-auto text-amber-400" />
               <p className="text-xs text-zinc-400 mt-2">Starting WhatsApp...</p>
+              {showForceReset && (
+                <div className="space-y-2 pt-2 border-t border-zinc-800">
+                  <p className="text-xs text-zinc-500">Stuck? Stale credentials may be jamming the connection.</p>
+                  <button
+                    onClick={handleForceReset}
+                    disabled={resetting}
+                    className="text-xs font-medium text-amber-400 hover:text-amber-300 underline disabled:opacity-50"
+                  >
+                    {resetting ? 'Resetting...' : 'Force reset and try again'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

@@ -62,9 +62,34 @@ export function middleware(req: NextRequest) {
     }
   }
 
-  return new NextResponse("Unauthorized", {
+  // HTML body (not text/plain) so mobile browsers render the auth challenge
+  // inline. With text/plain, iOS Safari + some Android browsers turn the
+  // unknown-extension URL (/connect, /report, etc.) into a download named
+  // `connect.txt` when the user dismisses or doesn't see the Basic prompt.
+  const body = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in — Sales Tracker</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;background:#18181b;color:#e4e4e7;margin:0;padding:2rem;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.box{max-width:24rem;text-align:center}
+h1{margin:0 0 0.5rem;font-size:1.25rem}
+p{margin:0;color:#a1a1aa;font-size:0.875rem;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="box">
+<h1>Sales Tracker</h1>
+<p>This area requires the team password. Your browser should prompt you for it — if not, refresh the page.</p>
+</div>
+</body>
+</html>`
+  return new NextResponse(body, {
     status: 401,
     headers: {
+      "Content-Type": "text/html; charset=utf-8",
       "WWW-Authenticate": 'Basic realm="Sales Tracker"',
     },
   });

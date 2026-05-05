@@ -50,6 +50,14 @@ interface BaileysState {
   historicalByJid: Map<string, RawMessage[]>
   historySyncProgress: number // 0–100, last value from Baileys
   historySyncComplete: boolean
+  // Auto-recovery from stale-creds traps. Set true when we silently retry after
+  // a loggedOut wipe or a connect-timeout wipe; reset on successful 'open' or
+  // explicit disconnect(). Caps the auto-retry at one per session so a hard
+  // failure surfaces to the user instead of looping invisibly.
+  autoRetriedThisSession: boolean
+  // Fires if we sit in 'connecting' with no QR for too long (stale creds that
+  // don't trigger a clean loggedOut event — Baileys can stall on certain 401s).
+  connectTimeoutTimer: ReturnType<typeof setTimeout> | null
 }
 
 const AUTH_DIR = path.join(process.cwd(), '.baileys_auth')
@@ -110,7 +118,14 @@ const state: BaileysState = {
   historicalByJid: new Map(),
   historySyncProgress: 0,
   historySyncComplete: false,
+  autoRetriedThisSession: false,
+  connectTimeoutTimer: null,
 }
+
+// If we sit in 'connecting' with no QR after this long, assume stale creds are
+// jamming the handshake (Baileys doesn't always emit a clean loggedOut on 401)
+// and self-heal by wiping + retrying once.
+const CONNECT_TIMEOUT_MS = 10_000
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
@@ -182,6 +197,43 @@ function clearReconnectTimer(): void {
     clearTimeout(state.reconnectTimer)
     state.reconnectTimer = null
   }
+}
+
+function clearConnectTimeout(): void {
+  if (state.connectTimeoutTimer) {
+    clearTimeout(state.connectTimeoutTimer)
+    state.connectTimeoutTimer = null
+  }
+}
+
+// Arm the no-progress watchdog. Fires only if we're still in 'connecting'
+// with no QR after CONNECT_TIMEOUT_MS — meaning Baileys stalled silently,
+// almost always due to stale creds that didn't trigger a clean loggedOut.
+function armConnectTimeout(): void {
+  clearConnectTimeout()
+  state.connectTimeoutTimer = setTimeout(() => {
+    state.connectTimeoutTimer = null
+    if (state.shuttingDown) return
+    if (state.qrDataUrl || state.status === 'connected') return
+    if (state.status !== 'connecting') return
+
+    if (state.autoRetriedThisSession) {
+      // Already gave it a clean retry; don't loop forever. Surface to UI.
+      state.status = 'failed'
+      state.error = 'WhatsApp connect timed out. Click Disconnect to force reset, then Connect again.'
+      console.warn('[Baileys] Connect timeout — auto-retry exhausted, surfacing failure')
+      teardownSocket()
+      return
+    }
+
+    console.log('[Baileys] Connect timeout — wiping auth and retrying once (stale-creds self-heal)')
+    state.autoRetriedThisSession = true
+    teardownSocket()
+    // Wipe + reconnect. Status stays 'connecting' so the UI keeps its single
+    // spinner — user experience is one click → one QR, with this happening
+    // invisibly underneath.
+    void wipeAuthDir().then(() => scheduleReconnect(200))
+  }, CONNECT_TIMEOUT_MS)
 }
 
 function teardownSocket(): void {
@@ -295,6 +347,7 @@ async function openSocket(): Promise<{ status: BaileysStatus; error?: string }> 
     sock.ev.on('messages.upsert', handleMessagesUpsert)
     sock.ev.on('messaging-history.set', handleHistorySet)
 
+    armConnectTimeout()
     return { status: state.status }
   } catch (e) {
     const msg = formatErr(e)
@@ -312,6 +365,8 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
     try {
       state.qrDataUrl = await QRCode.toDataURL(qr, { width: 280, margin: 2 })
       state.status = 'qr_ready'
+      // QR arrived — handshake is healthy, no need to watchdog any further.
+      clearConnectTimeout()
       console.log('[Baileys] QR ready — scan with your phone')
     } catch (e) {
       console.error('[Baileys] QR generation error:', formatErr(e))
@@ -324,6 +379,10 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
     state.error = null
     state.lastConnectedAt = Date.now()
     state.reconnectAttempts = 0
+    // Successful open clears the auto-retry budget — a future loggedOut starts
+    // with a fresh single-shot retry, not "we already tried once long ago".
+    state.autoRetriedThisSession = false
+    clearConnectTimeout()
     console.log('[Baileys] Connected')
     return
   }
@@ -356,7 +415,27 @@ async function handleConnectionUpdate(update: BaileysEventMap['connection.update
       // Phone unlinked the device, OR we just called logout(). Either way,
       // creds are now invalid — wipe them so the next connect() generates a
       // fresh QR instead of looping on stale creds.
+      clearConnectTimeout()
       await wipeAuthDir()
+
+      // Self-heal: if this is the first loggedOut this session, the user
+      // hasn't been told yet. Silently re-connect with the now-empty auth dir
+      // so they see "connecting..." → QR, instead of "connecting..." →
+      // "logged out, click again" → "connecting..." → QR (two clicks).
+      if (!state.autoRetriedThisSession) {
+        state.autoRetriedThisSession = true
+        state.qrDataUrl = null
+        state.error = null
+        state.monitoredGroupJid = null
+        state.monitoredGroupName = null
+        console.log('[Baileys] Logged out — auto-retrying once with fresh creds')
+        // 500ms gives Baileys a beat to release any remaining file handles
+        // before the next useMultiFileAuthState reads from the dir.
+        void scheduleReconnect(500)
+        return
+      }
+
+      // Auto-retry already used — surface the loggedOut to the user.
       state.status = 'disconnected'
       state.qrDataUrl = null
       state.error = 'Logged out from WhatsApp. Click Connect to scan a new QR.'
@@ -438,6 +517,7 @@ export async function disconnect(): Promise<void> {
   state.shuttingDown = true
   try {
     clearReconnectTimer()
+    clearConnectTimeout()
 
     // 1. Wait for any in-flight connect() to finish, otherwise its socket would
     //    survive our teardown and become a phantom connection.
@@ -491,6 +571,8 @@ export async function disconnect(): Promise<void> {
     state.historicalByJid = new Map()
     state.historySyncProgress = 0
     state.historySyncComplete = false
+    // Fresh user-initiated session — restore the single-shot auto-retry budget.
+    state.autoRetriedThisSession = false
   } finally {
     state.shuttingDown = false
   }

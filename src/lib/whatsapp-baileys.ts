@@ -17,7 +17,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys'
 import QRCode from 'qrcode'
 import path from 'node:path'
-import { rm, readdir, unlink } from 'node:fs/promises'
+import { readdir, unlink } from 'node:fs/promises'
 import type { RawMessage } from '@/types'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -166,29 +166,79 @@ function formatErr(err: unknown): string {
   return code ? `status=${code}` : String(err)
 }
 
+/**
+ * Wipe Baileys auth dir contents.
+ *
+ * IMPORTANT: AUTH_DIR is a bind-mounted directory in Docker
+ * (`./baileys_auth:/app/.baileys_auth`). The Linux kernel returns EBUSY on any
+ * attempt to `rmdir` a bind mount target while mounted, regardless of file
+ * handles or wait time. So `rm -rf` is the WRONG primitive here — it deletes
+ * contents fine but always fails on the final rmdir of the directory itself.
+ *
+ * The correct approach is per-file `unlink` for the contents. The directory
+ * itself stays (it's the mount point — we don't want to remove it anyway).
+ *
+ * Earlier versions of this function tried `rm -rf` with EBUSY retry, then
+ * fell back to per-file unlink. The fallback was unreachable on the 3rd EBUSY
+ * (logic bug), and rm-rf can never succeed on a bind mount in any case.
+ *
+ * Heavy logging here is intentional — this function has been the prime
+ * suspect in a multi-week QR-trap chase. Logs let us verify, on every call,
+ * that the wipe actually removed files.
+ */
 async function wipeAuthDir(): Promise<void> {
-  // Try rm -rf first; if the directory is EBUSY (Baileys still holds file
-  // handles from the last creds.update write), fall back to unlinking each
-  // file individually — Linux allows unlink on open files.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      await rm(AUTH_DIR, { recursive: true, force: true })
+  const t0 = Date.now()
+  console.log(`[Baileys.wipe] START dir=${AUTH_DIR}`)
+
+  let files: string[]
+  try {
+    files = await readdir(AUTH_DIR)
+  } catch (e: unknown) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') {
+      console.log('[Baileys.wipe] dir does not exist — already clean')
       return
+    }
+    console.error(`[Baileys.wipe] readdir failed code=${code}: ${formatErr(e)}`)
+    return
+  }
+
+  console.log(`[Baileys.wipe] found ${files.length} file(s)${files.length ? ': ' + files.slice(0, 5).join(', ') + (files.length > 5 ? ', …' : '') : ''}`)
+
+  let unlinked = 0
+  let failed = 0
+  const failures: string[] = []
+  for (const f of files) {
+    const fp = path.join(AUTH_DIR, f)
+    try {
+      await unlink(fp)
+      unlinked++
     } catch (e: unknown) {
+      failed++
       const code = (e as NodeJS.ErrnoException).code
-      if (code !== 'EBUSY' || attempt === 2) {
-        console.warn('[Baileys] Failed to wipe auth dir:', formatErr(e))
-        return
-      }
-      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)))
+      failures.push(`${f}(${code ?? 'unknown'})`)
     }
   }
-  // Last-resort: unlink individual files, leave the empty dir
+
+  // Verify by re-reading the dir. Anything still here means our wipe failed
+  // for that file specifically — the next connect() will load stale creds
+  // for whatever survived, so we want this surfaced loudly.
+  let survivors: string[] = []
   try {
-    const files = await readdir(AUTH_DIR)
-    await Promise.all(files.map((f) => unlink(path.join(AUTH_DIR, f)).catch(() => {})))
+    survivors = await readdir(AUTH_DIR)
   } catch {
-    // directory may not exist — that's fine
+    /* dir vanished mid-operation — unusual but harmless */
+  }
+
+  const elapsed = Date.now() - t0
+  console.log(
+    `[Baileys.wipe] DONE in ${elapsed}ms — unlinked=${unlinked} failed=${failed} survivors=${survivors.length}`,
+  )
+  if (failed > 0) {
+    console.warn(`[Baileys.wipe] FAILURES: ${failures.join(', ')}`)
+  }
+  if (survivors.length > 0) {
+    console.warn(`[Baileys.wipe] SURVIVORS (next connect will load these as stale creds): ${survivors.slice(0, 5).join(', ')}${survivors.length > 5 ? ', …' : ''}`)
   }
 }
 
@@ -298,14 +348,30 @@ export function clearCapturedMessages(date?: string): void {
 // ── Connect / Disconnect ─────────────────────────────────────────────────────
 
 export async function connect(): Promise<{ status: BaileysStatus; error?: string }> {
+  console.log(
+    `[Baileys.connect] ENTER status=${state.status} autoRetried=${state.autoRetriedThisSession} reconnectAttempts=${state.reconnectAttempts} hasSocket=${!!state.socket} hasConnectingPromise=${!!state.connectingPromise} shuttingDown=${state.shuttingDown}`,
+  )
+
   if (state.shuttingDown) {
+    console.log('[Baileys.connect] EXIT — shutting down')
     return { status: 'disconnected', error: 'Disconnect in progress' }
   }
   if (state.socket && state.status === 'connected') {
+    console.log('[Baileys.connect] EXIT — already connected')
     return { status: 'connected' }
   }
   if (state.connectingPromise) {
+    console.log('[Baileys.connect] EXIT — joining existing connectingPromise')
     return state.connectingPromise
+  }
+
+  // User-initiated calls (POST /api/whatsapp/connect from a fresh state) get
+  // a fresh auto-retry budget. Internal scheduleReconnect calls go through
+  // 'connecting' state, so they don't reset and remain capped at one self-heal.
+  const isUserInitiated = state.status === 'disconnected' || state.status === 'failed'
+  if (isUserInitiated && state.autoRetriedThisSession) {
+    console.log('[Baileys.connect] user-initiated — resetting autoRetriedThisSession')
+    state.autoRetriedThisSession = false
   }
 
   clearReconnectTimer()
@@ -360,6 +426,10 @@ async function openSocket(): Promise<{ status: BaileysStatus; error?: string }> 
 
 async function handleConnectionUpdate(update: BaileysEventMap['connection.update']): Promise<void> {
   const { connection, lastDisconnect, qr } = update
+  const errCode = lastDisconnect?.error ? getStatusCode(lastDisconnect.error) : undefined
+  console.log(
+    `[Baileys.update] connection=${connection ?? 'n/a'} hasQr=${!!qr} errCode=${errCode ?? 'n/a'} status=${state.status} autoRetried=${state.autoRetriedThisSession}`,
+  )
 
   if (qr) {
     try {

@@ -1,5 +1,34 @@
 # CONTINUE.md
 
+## 2026-05-05 — QR-trap self-healing fix (PR #39)
+
+### Shipped
+- PR #39 (`fix/qr-trap-loggedout-ebusy`) — three-commit fix for the "click Connect, QR never loads" bug:
+  - `5ba159e` cherry-picked `042e072` (EBUSY retry on `wipeAuthDir` — was on a sibling branch but never merged to main)
+  - `35d3dc3` lib self-heal: `autoRetriedThisSession` flag + auto-retry on `loggedOut` + 10s connect-timeout watchdog
+  - `604b947` UI escape hatch: "Force reset and try again" surfaces after 15s in `connecting`; also fixes poll-interval leak in `handleDisconnect`
+- Diagnosis traced via commit-message grep — `042e072` literally described the symptom; `git merge-base --is-ancestor` confirmed it was missing from main. ~5 min from "QR not loading" to "I know what's wrong."
+- Local gates green: typecheck, 48/48 tests, build. Pre-push hook didn't fire (likely `core.hooksPath` not set in this clone) — same checks ran manually.
+
+### Pending
+- **Watch PR #39 CI** — if `act` gate passes server-side, deploy.yml ships it on merge.
+- **Post-deploy smoke** — hit https://sales.telligences.com/connect, click Connect on the existing stale auth dir, confirm QR appears in ~3s without operator SSH.
+- **Re-pair WhatsApp** once QR loads — same step as before, just the new code makes it work first try.
+
+### Known issues unchanged from 2026-04-23 sprint
+- `APP_PASSWORD` rotation still pending — leaked in transcript, live for 12+ days now.
+- `CRON_SECRET` may have drifted between droplet `.env` and GitHub secret — verify post-merge.
+- Dependabot queue: 7 PRs from Apr 23 sprint may have grown stale; rerun `npm audit`.
+
+### Forward-plan items unblocked by this fix
+- M1 lint+test ratchet (was blocked because pre-merge tests were unreliable while QR-trap lurked).
+- The 8pm IST daily-report cron now has a clear path back to a connected WhatsApp.
+
+### Vanta invariant captured (for `/vanta-sync` after merge)
+> **Bind-mounted Baileys auth dir + best-effort `wipeAuthDir()` = QR-trap on every loggedOut.** Persistent auth volumes need either: (a) EBUSY-retry + per-file unlink fallback in the wipe, (b) auto-retry-once on loggedOut so user-perceived recovery is single-click, (c) a connect-timeout watchdog because Baileys silently stalls on some 401s without emitting a clean loggedOut. All three layers required; (a) alone leaves user with a two-click recovery path.
+
+---
+
 ## 2026-04-23 — field hotfix sprint + enterprise CI + local act + retro
 
 ### Shipped

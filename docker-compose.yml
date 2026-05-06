@@ -62,11 +62,13 @@ services:
     # Bump deliberately, never automatically. See docs/incidents/2026-05-tunnel-flap.md.
     image: cloudflare/cloudflared:2026.2.0
     restart: unless-stopped
-    # --protocol http2 forces HTTP/2 over TLS instead of the default QUIC.
-    # QUIC was the failure mode in 100% of our flap logs ("failed to dial to
-    # edge with quic: timeout: no recent network activity") on blr02 + bom09
-    # edge POPs. HTTP/2 is more robust over flaky network paths.
-    command: tunnel --no-autoupdate --protocol http2 --config /cloudflared.yml run
+    # NOTE: --protocol http2 was attempted on 2026-05-06 to bypass QUIC flap
+    # behavior, but Cloudflare edge silently 503'd ALL traffic to HTTP/2-mode
+    # connectors despite clean cloudflared registration logs (4/4 connIndex
+    # registered, zero error logs, zero traffic forwarded for 13+ min). Reverted
+    # to QUIC default. Version pin alone (2026.2.0 vs flapping 2026.3.0) is the
+    # primary fix. See docs/incidents/2026-05-tunnel-flap.md for details.
+    command: tunnel --no-autoupdate --config /cloudflared.yml run
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN}
     volumes:

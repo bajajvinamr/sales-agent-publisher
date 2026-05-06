@@ -57,9 +57,16 @@ services:
       sh -c "npx prisma@6 db push --skip-generate --accept-data-loss && node server.js"
 
   tunnel:
-    image: cloudflare/cloudflared:latest
+    # Pin to a specific tag — `:latest` re-pulls on every rebuild and shipped
+    # QUIC regressions in 2026.3.0 that caused 48h of intermittent 503s.
+    # Bump deliberately, never automatically. See docs/incidents/2026-05-tunnel-flap.md.
+    image: cloudflare/cloudflared:2026.2.0
     restart: unless-stopped
-    command: tunnel --no-autoupdate --config /cloudflared.yml run
+    # --protocol http2 forces HTTP/2 over TLS instead of the default QUIC.
+    # QUIC was the failure mode in 100% of our flap logs ("failed to dial to
+    # edge with quic: timeout: no recent network activity") on blr02 + bom09
+    # edge POPs. HTTP/2 is more robust over flaky network paths.
+    command: tunnel --no-autoupdate --protocol http2 --config /cloudflared.yml run
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN}
     volumes:

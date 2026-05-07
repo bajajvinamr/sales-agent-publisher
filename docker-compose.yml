@@ -77,27 +77,35 @@ services:
       - app
 
   caddy:
-    # Staging-mode reverse-proxy. Validates that Caddy can reach `app:3000`
-    # over the docker-internal network and reverse-proxy correctly.
-    # NOT bound to public 80/443 yet — that's the cutover step. For now it
-    # listens on host loopback :8080 only, so it's reachable from inside
-    # the droplet but not from the public internet (defense-in-depth even
-    # though no DNS resolves to this port). Once cutover is approved, this
-    # binding switches to "80:80" + "443:443" and the Caddyfile's production
-    # block (with TLS) is enabled.
+    # Production reverse-proxy — replaces cloudflared as public ingress.
+    # See docs/runbooks/edge-vs-origin-health.md and
+    # docs/proposals/ingress-hardening.md.
+    #
+    # Binds host 80/443. TLS via Cloudflare Origin Certificate at
+    # /etc/caddy/origin-{cert,key}.pem on the droplet (mounted read-only).
+    # Cloudflare's "Full (strict)" SSL mode validates this cert at the edge.
     image: caddy:2-alpine
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "80:80"
+      - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /etc/caddy/origin-cert.pem:/etc/caddy/origin-cert.pem:ro
+      - /etc/caddy/origin-key.pem:/etc/caddy/origin-key.pem:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
       - app
-    # No healthcheck yet — staging validation is a manual curl. Add a
-    # healthcheck pointing at /api/health (via Caddy on 8080 now, 443 later)
-    # at cutover time.
+    healthcheck:
+      # Probes the reverse-proxy locally (skip cert check; we just want to
+      # confirm Caddy → app round-trip succeeds). The actual TLS validation
+      # happens at Cloudflare's edge against the CF Origin Cert.
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider --no-check-certificate https://localhost/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   pgdata:

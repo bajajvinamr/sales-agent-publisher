@@ -1,28 +1,50 @@
-# Caddy reverse-proxy config — Phase 5 ingress hardening.
+# Caddy reverse-proxy config — Phase 5 ingress (PRODUCTION MODE).
 #
-# Staging mode (current): plain HTTP on :8080, loopback-bound on the host.
-#   Validates that Caddy can reverse-proxy `app:3000` over the docker-internal
-#   network. Used to prove the wiring before any DNS / port 443 changes.
+# Replaces the cloudflared tunnel as the public ingress for sales.telligences.com.
+# Architecture: User → Cloudflare proxy edge → droplet:443 (Caddy) → app:3000
 #
-# Production mode (post-cutover): switch to the production block below.
+# TLS: Cloudflare Origin Certificate, mounted from /etc/caddy on the droplet.
+#   - Issued by Cloudflare Origin CA (NOT a public CA)
+#   - Valid 15 years; renewal is manual via CF dashboard
+#   - Cloudflare's Full (strict) SSL mode validates this cert on its CA
 #
-# Why Caddy over nginx: 10-line config vs 60+, automatic cert management
-# (when we move past staging), tiny binary (~15 MB resident).
+# Ingress traffic flow:
+#   1. User → Cloudflare anycast IP (resolved from DNS)
+#   2. Cloudflare proxy → droplet 443 over TLS (validates origin cert)
+#   3. Caddy terminates TLS, reverse-proxies to app:3000 over docker-internal
+#   4. Real client IP surfaced via cf-connecting-ip header (already trusted —
+#      Cloudflare strips this header from incoming requests, sets it itself)
 #
-# See docs/proposals/ingress-hardening.md for the full migration plan.
+# Why Caddy: 10-line config vs nginx 60+, ~15 MB resident, no ACME complexity
+# since we use a long-lived CF Origin Cert.
+#
+# See docs/proposals/ingress-hardening.md for the full migration rationale.
 
 {
-	# Staging mode — disable Caddy's automatic-HTTPS so the staging block
-	# below is plain HTTP only. Remove this `auto_https off` directive when
-	# switching the production block to TLS.
-	auto_https off
 	admin off
 }
 
-# === STAGING (active) ===
-# Plain HTTP on 8080 — validates reverse-proxy without cert complexity.
-:8080 {
-	reverse_proxy app:3000
+sales.telligences.com {
+	tls /etc/caddy/origin-cert.pem /etc/caddy/origin-key.pem
+
+	reverse_proxy app:3000 {
+		# cf-connecting-ip is the real client IP set by Cloudflare's edge.
+		# Trustworthy because traffic only reaches us via Cloudflare proxy
+		# (orange-cloud) — the droplet's port 443 should reject any traffic
+		# that didn't come through CF (future hardening: CF IP allowlist on
+		# UFW). Until then, the header is the best client-IP source.
+		header_up X-Real-IP {http.request.header.cf-connecting-ip}
+		header_up X-Forwarded-For {http.request.header.cf-connecting-ip}
+	}
+
+	# Security headers — match the existing middleware-applied set on the
+	# Next.js app. Caddy applies these to every response.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
 
 	log {
 		output stdout
@@ -30,46 +52,3 @@
 		level INFO
 	}
 }
-
-# === PRODUCTION (commented until cutover-time decision) ===
-# Uncomment ONE of the two blocks below at cutover time, then remove the
-# staging :8080 block above and the `auto_https off` global directive.
-#
-# Option A — Cloudflare Origin Certificate (recommended):
-#   1. In Cloudflare dashboard: SSL/TLS → Origin Server → Create Certificate
-#   2. Save the certificate to /etc/caddy/origin-cert.pem on the droplet
-#   3. Save the private key to /etc/caddy/origin-key.pem (chmod 600)
-#   4. Mount both into the caddy container in docker-compose.yml
-#   5. Set Cloudflare SSL/TLS encryption mode to "Full (strict)"
-#
-# sales.telligences.com {
-# 	tls /etc/caddy/origin-cert.pem /etc/caddy/origin-key.pem
-# 	reverse_proxy app:3000 {
-# 		header_up X-Real-IP {http.request.header.cf-connecting-ip}
-# 		header_up X-Forwarded-For {http.request.header.cf-connecting-ip}
-# 	}
-# 	header {
-# 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-# 		X-Frame-Options "DENY"
-# 		X-Content-Type-Options "nosniff"
-# 		Referrer-Policy "strict-origin-when-cross-origin"
-# 	}
-# }
-#
-# Option B — Let's Encrypt (auto-renew, requires port 80 inbound):
-#   - Caddy auto-provisions and auto-renews via HTTP-01
-#   - Requires port 80 reachable from public internet (UFW allow 80)
-#   - Cloudflare proxy must be set to "Full" or "Full (strict)" mode
-#
-# sales.telligences.com {
-# 	reverse_proxy app:3000 {
-# 		header_up X-Real-IP {http.request.header.cf-connecting-ip}
-# 		header_up X-Forwarded-For {http.request.header.cf-connecting-ip}
-# 	}
-# 	header {
-# 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-# 		X-Frame-Options "DENY"
-# 		X-Content-Type-Options "nosniff"
-# 		Referrer-Policy "strict-origin-when-cross-origin"
-# 	}
-# }

@@ -1,0 +1,161 @@
+name: Cleanup Stale Incidents
+
+# One-shot manual workflow that closes stale auto-filed `prod-incident` and
+# `deploy-failure` issues with an explanatory comment linking the new monitor
+# logic. ALWAYS dry-run by default — set dry_run=false to actually close.
+#
+# Why this exists: between 2026-05-01 and 2026-05-07, the old 1-strike monitor
+# auto-filed 14 `PROD DOWN` issues that were all false positives from
+# cloudflared QUIC reconnects. Those issues are now noise. This workflow
+# adds a comment to each (linking the new runbook + the monitor PR) and
+# closes the stale ones, leaving any issue with recent human activity alone.
+#
+# See docs/runbooks/edge-vs-origin-health.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only — list what would be closed without closing.'
+        type: boolean
+        default: true
+      which:
+        description: 'Which label class to clean up.'
+        type: choice
+        options:
+          - all
+          - prod-incident
+          - deploy-failure
+        default: all
+      stale_days:
+        description: 'Only close issues older than N days (default 3).'
+        type: string
+        default: '3'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  cleanup:
+    name: close stale auto-filed incidents
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          WHICH: ${{ inputs.which }}
+          STALE_DAYS: ${{ inputs.stale_days }}
+        with:
+          script: |
+            const dryRun = process.env.DRY_RUN === 'true'
+            const which = process.env.WHICH
+            const staleDays = parseInt(process.env.STALE_DAYS, 10) || 3
+            const labelsToClean = which === 'all'
+              ? ['prod-incident', 'deploy-failure']
+              : [which]
+            const staleMs = staleDays * 24 * 60 * 60 * 1000
+            const now = Date.now()
+
+            const summary = []
+            let totalClosed = 0
+            let totalSkipped = 0
+
+            const closedComment = (label) => {
+              const isProd = label === 'prod-incident'
+              const heading = isProd
+                ? '### Closing as superseded false positive'
+                : '### Closing as superseded by subsequent fixes'
+              const reason = isProd
+                ? [
+                    'This issue was filed by the v1 Health Watch workflow, which opened an incident on a *single* HTTP non-200 response from the public edge.',
+                    '',
+                    'Investigation showed that 14 of these `PROD DOWN` issues filed between 2026-05-01 and 2026-05-07 were all false positives caused by cloudflared QUIC connector reconnects (~4-second 503-with-empty-body windows). The app container had `RestartCount=0` for the entire window, the database had 13 days uptime, and every issue auto-closed without a human commit.',
+                    '',
+                    'The monitor has been replaced with a 3-strike hysteresis + SSH origin correlation design. Single transient blips no longer page. See [docs/runbooks/edge-vs-origin-health.md](../blob/main/docs/runbooks/edge-vs-origin-health.md) for the new decision matrix.',
+                  ]
+                : [
+                    'This deploy-failure issue references a commit that has since been superseded by the current `main` HEAD. The fix landed in subsequent commits — leaving this issue open serves no purpose.',
+                    '',
+                    'Future deploy failures will include the deploy scope (`app-only` vs `full`) in the issue body so they can be triaged faster. See [docs/runbooks/edge-vs-origin-health.md](../blob/main/docs/runbooks/edge-vs-origin-health.md).',
+                  ]
+              return [heading, '', ...reason, '', `_Closed automatically by \`cleanup-stale-incidents.yml\`._`].join('\n')
+            }
+
+            for (const label of labelsToClean) {
+              const { data: issues } = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                labels: label,
+                per_page: 100,
+              })
+
+              for (const issue of issues) {
+                const ageMs = now - new Date(issue.created_at).getTime()
+                if (ageMs < staleMs) {
+                  summary.push(`SKIP #${issue.number} [${label}] — too recent (${Math.round(ageMs / 86400000)}d old)`)
+                  totalSkipped++
+                  continue
+                }
+
+                // Skip if there is a comment newer than staleDays/2 from a non-bot account —
+                // someone is probably actively working on it.
+                const { data: comments } = await github.rest.issues.listComments({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  per_page: 100,
+                })
+                const recentHumanComment = comments.find(c => {
+                  const isBot = c.user && (c.user.type === 'Bot' || c.user.login.endsWith('[bot]') || c.user.login === 'github-actions')
+                  if (isBot) return false
+                  return (now - new Date(c.created_at).getTime()) < (staleMs / 2)
+                })
+                if (recentHumanComment) {
+                  summary.push(`SKIP #${issue.number} [${label}] — recent human comment from @${recentHumanComment.user.login}`)
+                  totalSkipped++
+                  continue
+                }
+
+                if (dryRun) {
+                  summary.push(`WOULD CLOSE #${issue.number} [${label}] "${issue.title}" (${Math.round(ageMs / 86400000)}d old)`)
+                  totalClosed++
+                  continue
+                }
+
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: closedComment(label),
+                })
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'closed',
+                  state_reason: 'completed',
+                })
+                summary.push(`CLOSED #${issue.number} [${label}] "${issue.title}"`)
+                totalClosed++
+              }
+            }
+
+            const banner = dryRun
+              ? `**DRY RUN** — re-run with \`dry_run=false\` to actually close.`
+              : `**EXECUTED** — issues closed for real.`
+            const report = [
+              banner,
+              '',
+              `Labels checked: ${labelsToClean.join(', ')}`,
+              `Stale threshold: ${staleDays}d`,
+              `Would-close / closed: ${totalClosed}`,
+              `Skipped: ${totalSkipped}`,
+              '',
+              ...summary,
+            ].join('\n')
+
+            await core.summary.addRaw(report).write()
+            console.log(report)

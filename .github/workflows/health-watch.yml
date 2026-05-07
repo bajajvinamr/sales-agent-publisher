@@ -157,7 +157,7 @@ jobs:
 
       - name: Find existing open incident
         id: open_issue
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const labels = ['app-down', 'ingress-degraded', 'prod-incident']
@@ -187,7 +187,7 @@ jobs:
           steps.probe.outputs.max_fail_streak == '3' &&
           steps.open_issue.outputs.number == '' &&
           steps.probe.outputs.classification != 'unknown'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           PROBE_CLASSIFICATION: ${{ steps.probe.outputs.classification }}
           PROBE_CLASS_LABEL: ${{ steps.probe.outputs.classification_label }}
@@ -247,7 +247,7 @@ jobs:
         if: >
           steps.probe.outputs.pass_streak >= '2' &&
           steps.open_issue.outputs.number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const number = Number('${{ steps.open_issue.outputs.number }}')

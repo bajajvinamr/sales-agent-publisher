@@ -97,7 +97,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build image for scan
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - run: docker build -t sales-agent-publisher-app:scan .
 
       - name: Run Trivy

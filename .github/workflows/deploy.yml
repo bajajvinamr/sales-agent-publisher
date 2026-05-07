@@ -67,9 +67,18 @@ jobs:
           echo "sha=$PRE_COMMIT" >> $GITHUB_OUTPUT
           echo "Pre-deploy HEAD: $PRE_COMMIT"
 
-      - name: Deploy
+      - name: Deploy (app-only by default, full only when infra config changed)
         id: deploy
         run: |
+          # Rebuild scope is decided ON the droplet by diffing the new HEAD
+          # against the pre-deploy HEAD. If only application code changed,
+          # rebuild ONLY the `app` service so the cloudflared tunnel keeps its
+          # registered edge connections. Restarting cloudflared causes a 5–15
+          # min global Cloudflare edge propagation window during which a
+          # fraction of public requests get false-positive 503s. We avoid
+          # paying that cost on every app-code deploy.
+          # See docs/incidents/2026-05-tunnel-flap.md and
+          # docs/runbooks/edge-vs-origin-health.md.
           ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=30 \
@@ -77,10 +86,40 @@ jobs:
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} bash <<'REMOTE'
             set -e
             cd sales-agent-publisher
+            PRE=$(git rev-parse HEAD)
             git fetch origin main
             git reset --hard origin/main
-            docker compose up -d --build
+            POST=$(git rev-parse HEAD)
+            if [ "$PRE" = "$POST" ]; then
+              # Manual redeploy of the same SHA — assume the operator wants a
+              # full refresh (e.g. they're forcing a rebuild on purpose).
+              SCOPE="full"
+              CHANGED="(no commits — manual redeploy)"
+            else
+              CHANGED=$(git diff --name-only "$PRE" "$POST" -- docker-compose.yml cloudflared.yml 2>/dev/null || true)
+              if [ -n "$CHANGED" ]; then
+                SCOPE="full"
+              else
+                SCOPE="app-only"
+              fi
+            fi
+            echo "Deploy scope: $SCOPE  (infra files changed: ${CHANGED:-none})"
+            if [ "$SCOPE" = "full" ]; then
+              docker compose up -d --build
+              printf 'tunnel_rebuilt=true\nscope=full\n' > /tmp/deploy-scope
+            else
+              # App-only path: tunnel and db are NOT touched.
+              docker compose up -d --build app
+              printf 'tunnel_rebuilt=false\nscope=app-only\n' > /tmp/deploy-scope
+            fi
           REMOTE
+          # Pull scope info back to the runner for downstream steps.
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=accept-new \
+            -o BatchMode=yes \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "cat /tmp/deploy-scope 2>/dev/null || printf 'tunnel_rebuilt=unknown\nscope=unknown\n'" \
+            >> $GITHUB_OUTPUT
 
       - name: Wait for health
         id: health
@@ -148,6 +187,7 @@ jobs:
                 `**Commit:** ${context.sha}`,
                 `**Run:** ${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
                 `**Pre-deploy HEAD:** ${{ steps.pre.outputs.sha }} (rolled back to this)`,
+                `**Deploy scope:** ${{ steps.deploy.outputs.scope || 'unknown' }} (tunnel_rebuilt=${{ steps.deploy.outputs.tunnel_rebuilt || 'unknown' }})`,
                 `**Health check:** ${{ steps.health.outputs.ok == 'true' && '200 OK' || 'never reached 200' }}`,
                 ``,
                 `See the linked run for full logs.`,

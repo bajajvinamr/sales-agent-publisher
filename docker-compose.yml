@@ -76,5 +76,30 @@ services:
     depends_on:
       - app
 
+  caddy:
+    # Staging-mode reverse-proxy. Validates that Caddy can reach `app:3000`
+    # over the docker-internal network and reverse-proxy correctly.
+    # NOT bound to public 80/443 yet — that's the cutover step. For now it
+    # listens on host loopback :8080 only, so it's reachable from inside
+    # the droplet but not from the public internet (defense-in-depth even
+    # though no DNS resolves to this port). Once cutover is approved, this
+    # binding switches to "80:80" + "443:443" and the Caddyfile's production
+    # block (with TLS) is enabled.
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    # No healthcheck yet — staging validation is a manual curl. Add a
+    # healthcheck pointing at /api/health (via Caddy on 8080 now, 443 later)
+    # at cutover time.
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

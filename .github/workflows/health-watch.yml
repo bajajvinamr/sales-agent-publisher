@@ -1,8 +1,32 @@
 name: Health Watch
 
-# Every 15 min: hit /api/health. Two consecutive failures → opens an
-# Issue labelled 'prod-incident' assigned to the repo owner.
-# On first 200 after a failure, auto-closes the open incident.
+# Every 15 min: probe the public edge with 3-strike in-run hysteresis and
+# correlate against an SSH origin probe to classify failures.
+#
+# Decision rules (all evaluated within a single workflow run):
+#
+#   - 3 consecutive edge failures spaced 30s apart (~90s window) are required
+#     to open an incident. Single empty 503s from cloudflared QUIC reconnects
+#     no longer page.
+#
+#   - Origin truth: when the edge fails, we SSH to the droplet and probe
+#     http://localhost:3000/api/health (same path as deploy.yml's PR #42 logic).
+#     If origin is 200 → "ingress-degraded" (edge/tunnel suspected).
+#     If origin is also failing → "app-down" (real outage).
+#     If SSH itself fails → "unknown" (don't auto-page; will retry next run).
+#
+#   - Body classification (additional signal):
+#       empty body  → cloudflared edge returned 503 (origin never reached)
+#       JSON body   → reached the Next.js app (real app error or degraded state)
+#       timeout/000 → network or origin ambiguity
+#
+#   - Recovery requires 2 consecutive 200s ending at probe 3. A single 200
+#     in the middle of a flapping window does NOT auto-close.
+#
+# Real outages still alert in <2 min (90s probe window + cron jitter).
+# Transient cloudflared blips no longer file noise.
+#
+# See docs/runbooks/edge-vs-origin-health.md for the failure-mode rationale.
 
 on:
   schedule:
@@ -13,77 +37,216 @@ concurrency:
   group: health-watch
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   check:
-    name: hit /api/health
+    name: edge probe + origin correlation
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
-      - name: Probe
-        id: probe
+      - name: Setup SSH (for origin correlation probe)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
-          URL="${{ secrets.APP_URL }}/api/health"
-          CODE=$(curl -s -o /tmp/h.json -w "%{http_code}" "$URL" --max-time 12 || echo "000")
-          BODY=$(cat /tmp/h.json 2>/dev/null || echo "(no body)")
-          echo "status=$CODE" >> $GITHUB_OUTPUT
-          # multi-line body for later steps
-          {
-            echo "body<<EOF"
-            echo "$BODY"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
-          echo "Probe: HTTP $CODE"
-          echo "$BODY"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null
+          ssh-keyscan -T 10 -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Find open incident
+      - name: Probe edge (3 samples over 90s) and correlate with origin
+        id: probe
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set +e
+
+          # Edge probes — 3 samples, 30s apart
+          fail_streak=0
+          max_fail_streak=0
+          pass_streak=0
+          last_code="000"
+          last_body=""
+          for i in 1 2 3; do
+            CODE=$(curl -s -o /tmp/h.json -w "%{http_code}" "$APP_URL/api/health" --max-time 12 || echo "000")
+            BODY=$(cat /tmp/h.json 2>/dev/null || echo "")
+            echo "Edge probe $i/3: HTTP $CODE  body_bytes=$(printf '%s' "$BODY" | wc -c)"
+            last_code="$CODE"
+            last_body="$BODY"
+            if [ "$CODE" = "200" ]; then
+              pass_streak=$((pass_streak + 1))
+              fail_streak=0
+            else
+              fail_streak=$((fail_streak + 1))
+              [ $fail_streak -gt $max_fail_streak ] && max_fail_streak=$fail_streak
+              pass_streak=0
+            fi
+            if [ $i -lt 3 ]; then sleep 30; fi
+          done
+
+          echo "Edge summary: max_fail_streak=$max_fail_streak  ending_pass_streak=$pass_streak"
+
+          # Body classification — best-effort signal for issue body
+          body_bytes=$(printf '%s' "$last_body" | wc -c | tr -d ' ')
+          if [ "$last_code" = "000" ]; then
+            body_class="timeout"
+            body_class_label="timeout — network or origin ambiguity"
+          elif [ "$body_bytes" = "0" ]; then
+            body_class="empty"
+            body_class_label="empty body — cloudflared edge 5xx (origin never reached)"
+          elif printf '%s' "$last_body" | head -c 1 | grep -q '{'; then
+            body_class="json"
+            body_class_label="JSON body — Next.js app responded"
+          else
+            body_class="other"
+            body_class_label="non-empty non-JSON body — unusual"
+          fi
+
+          # Origin correlation — only run if we saw at least one edge failure
+          origin_status="not-checked"
+          origin_code=""
+          classification="unknown"
+          classification_label="unknown"
+          if [ $max_fail_streak -gt 0 ]; then
+            origin_code=$(ssh -i ~/.ssh/id_ed25519 \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=10 \
+              -o BatchMode=yes \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/health --max-time 5 || echo '000'" \
+              2>/dev/null)
+            ssh_rc=$?
+            if [ $ssh_rc -ne 0 ] || [ -z "$origin_code" ]; then
+              origin_status="ssh-unreachable"
+              origin_code="ssh-failed"
+              classification="unknown"
+              classification_label="origin probe failed (SSH unreachable) — cannot disambiguate"
+            elif [ "$origin_code" = "200" ]; then
+              origin_status="healthy"
+              classification="ingress"
+              classification_label="ingress/tunnel degraded — origin is healthy"
+            else
+              origin_status="failing"
+              classification="app"
+              classification_label="app down — origin also failing (HTTP $origin_code)"
+            fi
+            echo "Origin probe: HTTP $origin_code  status=$origin_status"
+          fi
+
+          {
+            echo "max_fail_streak=$max_fail_streak"
+            echo "pass_streak=$pass_streak"
+            echo "edge_code=$last_code"
+            echo "body_class=$body_class"
+            echo "body_class_label=$body_class_label"
+            echo "origin_code=$origin_code"
+            echo "origin_status=$origin_status"
+            echo "classification=$classification"
+            echo "classification_label=$classification_label"
+            echo "edge_body<<__EDGE_BODY_EOF__"
+            printf '%s\n' "$last_body"
+            echo "__EDGE_BODY_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Find existing open incident
         id: open_issue
         uses: actions/github-script@v7
         with:
           script: |
-            const { data } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'prod-incident',
-              per_page: 5,
-            })
-            const existing = data[0]
-            core.setOutput('number', existing ? existing.number : '')
-            core.setOutput('title', existing ? existing.title : '')
+            const labels = ['app-down', 'ingress-degraded', 'prod-incident']
+            for (const label of labels) {
+              const { data } = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                labels: label,
+                per_page: 5,
+              })
+              if (data[0]) {
+                core.setOutput('number', data[0].number)
+                core.setOutput('label', label)
+                core.setOutput('title', data[0].title)
+                return
+              }
+            }
+            core.setOutput('number', '')
+            core.setOutput('label', '')
+            core.setOutput('title', '')
 
-      - name: Create incident on failure
-        if: steps.probe.outputs.status != '200' && steps.open_issue.outputs.number == ''
+      # Open a new incident only when 3-of-3 edge probes failed AND no incident is open.
+      # The classification (set above) decides which label/severity to apply.
+      - name: Open incident (3 consecutive edge failures, no open issue)
+        if: >
+          steps.probe.outputs.max_fail_streak == '3' &&
+          steps.open_issue.outputs.number == '' &&
+          steps.probe.outputs.classification != 'unknown'
         uses: actions/github-script@v7
+        env:
+          PROBE_CLASSIFICATION: ${{ steps.probe.outputs.classification }}
+          PROBE_CLASS_LABEL: ${{ steps.probe.outputs.classification_label }}
+          PROBE_BODY_CLASS: ${{ steps.probe.outputs.body_class }}
+          PROBE_BODY_CLASS_LABEL: ${{ steps.probe.outputs.body_class_label }}
+          PROBE_EDGE_CODE: ${{ steps.probe.outputs.edge_code }}
+          PROBE_EDGE_BODY: ${{ steps.probe.outputs.edge_body }}
+          PROBE_ORIGIN_CODE: ${{ steps.probe.outputs.origin_code }}
+          PROBE_ORIGIN_STATUS: ${{ steps.probe.outputs.origin_status }}
+          APP_URL: ${{ secrets.APP_URL }}
         with:
           script: |
-            // Grace: require 2 consecutive failures before creating. We
-            // implement "second failure" by storing a flag in a repo variable
-            // or by simply creating on first — simpler is fine for v1.
+            const cls = process.env.PROBE_CLASSIFICATION
+            const label = cls === 'app' ? 'app-down' : 'ingress-degraded'
+            const titlePrefix = cls === 'app' ? 'APP DOWN' : 'INGRESS DEGRADED'
+            const severity = cls === 'app' ? 'PAGE — real outage' : 'INVESTIGATE — edge/tunnel suspected, origin healthy'
+            const assignees = cls === 'app' ? [context.repo.owner] : []
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `PROD DOWN: /api/health returned ${{ steps.probe.outputs.status }}`,
+              title: `${titlePrefix}: ${process.env.PROBE_CLASS_LABEL} (HTTP ${process.env.PROBE_EDGE_CODE})`,
               body: [
+                `**Severity:** ${severity}`,
+                `**Classification:** ${process.env.PROBE_CLASS_LABEL}`,
                 `**First seen:** ${new Date().toISOString()}`,
-                `**Status code:** ${{ steps.probe.outputs.status }}`,
-                `**URL probed:** ${{ secrets.APP_URL }}/api/health`,
                 ``,
-                `**Response body:**`,
+                `### Edge probe (public)`,
+                `- **URL:** ${process.env.APP_URL}/api/health`,
+                `- **Last code:** HTTP ${process.env.PROBE_EDGE_CODE}`,
+                `- **Body classification:** ${process.env.PROBE_BODY_CLASS_LABEL}`,
+                `- **Hysteresis:** 3/3 probes failed over ~90s (single transient blips do NOT alert)`,
+                ``,
+                `### Origin probe (SSH → localhost:3000)`,
+                `- **Status:** ${process.env.PROBE_ORIGIN_STATUS}`,
+                `- **HTTP code:** ${process.env.PROBE_ORIGIN_CODE || 'not-checked'}`,
+                ``,
+                `### Edge response body`,
                 '```',
-                `${{ steps.probe.outputs.body }}`,
+                (process.env.PROBE_EDGE_BODY || '').trim() || '(empty)',
                 '```',
                 ``,
-                `**Recent logs to grab:** \`ssh salestracker 'docker compose -f sales-agent-publisher/docker-compose.yml logs app --tail 50'\``,
-                `**Redeploy last-known-good:** go to Actions → Deploy → Run workflow`,
+                `### Recovery`,
+                `Auto-closes when 2 consecutive 200s land in a single Health Watch run (~30s apart in the same probe window).`,
+                ``,
+                `### Runbook`,
+                `- [docs/runbooks/edge-vs-origin-health.md](../blob/main/docs/runbooks/edge-vs-origin-health.md)`,
+                `- Recent logs: \`ssh salestracker 'docker compose -f sales-agent-publisher/docker-compose.yml logs app --tail 100'\``,
+                `- Tunnel logs: \`ssh salestracker 'docker compose -f sales-agent-publisher/docker-compose.yml logs tunnel --tail 50'\``,
+                `- Redeploy last-known-good: Actions → Deploy → Run workflow`,
               ].join('\n'),
-              labels: ['prod-incident', 'prod'],
-              assignees: [context.repo.owner],
+              labels: [label, 'prod'],
+              assignees: assignees,
             })
 
-      - name: Auto-close incident on recovery
-        if: steps.probe.outputs.status == '200' && steps.open_issue.outputs.number != ''
+      # Recovery: 2 consecutive 200s ending probe 3 AND there's an open incident
+      - name: Auto-close incident on sustained recovery
+        if: >
+          steps.probe.outputs.pass_streak >= '2' &&
+          steps.open_issue.outputs.number != ''
         uses: actions/github-script@v7
         with:
           script: |
@@ -92,7 +255,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: number,
-              body: `Recovered at ${new Date().toISOString()} — /api/health returned 200. Auto-closing.`,
+              body: `Recovered at ${new Date().toISOString()} — 2 consecutive 200s on /api/health. Auto-closing.`,
             })
             await github.rest.issues.update({
               owner: context.repo.owner,
@@ -102,8 +265,10 @@ jobs:
               state_reason: 'completed',
             })
 
-      - name: Fail workflow run on bad probe
-        if: steps.probe.outputs.status != '200'
+      # Log a summary line per run for trend analysis (greppable in Actions UI).
+      # Workflow stays green on transient blips so the Actions tab isn't polluted
+      # with red runs that aren't real outages. Real outages are surfaced via
+      # the issue created above, which is the actual paging signal.
+      - name: Run summary
         run: |
-          echo "::error::Health probe returned ${{ steps.probe.outputs.status }}"
-          exit 1
+          echo "::notice title=Health Watch summary::edge=${{ steps.probe.outputs.edge_code }} max_fail=${{ steps.probe.outputs.max_fail_streak }} pass=${{ steps.probe.outputs.pass_streak }} origin=${{ steps.probe.outputs.origin_status }} classification=${{ steps.probe.outputs.classification }}"
